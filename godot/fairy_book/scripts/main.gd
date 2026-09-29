@@ -19,6 +19,7 @@ const AD_CHEST_CD := 180.0
 const AD_BLESS_CD := 300.0
 const AD_KEY_CD := 1800.0
 ## «Отель фей»: перезарядки рекламных наград отеля
+const HotelViewScript := preload("res://scripts/hotel_view.gd")
 const AD_HOTEL_CD := 180.0
 const AD_STAR_CD := 600.0
 const AD_PROCS_CD := 300.0
@@ -78,6 +79,8 @@ var hotel_live: Array[Callable] = []
 var hotel_flash := ""
 var hotel_welcome := ""
 var hotel_sel_i := -1
+## выбор курсором на сцене отеля: "" | "q:<гостья на ресепшене>" | "r:<номер>:<место>"
+var hotel_sel := ""
 var hotel_theme_for := -1
 var hotel_proc_for := -1
 var hotel_sig := ""
@@ -842,6 +845,45 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 		b.add_theme_font_size_override("font_size", 21)
 		grid.add_child(b)
 	right.add_child(grid)
+	# глава «Отель фей» — вход прямо с главного экрана
+	var hch := Chapters.get_ch(Chapters.hotel_index())
+	var hs := Hotel.load_state()
+	var hcard := PanelContainer.new()
+	hcard.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var hst := StyleBoxFlat.new()
+	hst.bg_color = Color(hch["wing"], 0.8)
+	hst.set_border_width_all(2)
+	hst.border_color = Color(hch["main"], 0.8)
+	hst.set_corner_radius_all(10)
+	hst.set_content_margin_all(6)
+	hcard.add_theme_stylebox_override("panel", hst)
+	var hrow := HBoxContainer.new()
+	hrow.add_theme_constant_override("separation", 8)
+	hrow.alignment = BoxContainer.ALIGNMENT_CENTER
+	hcard.add_child(hrow)
+	var hp := _portrait(hch, 58)
+	hp.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hrow.add_child(hp)
+	var hv := VBoxContainer.new()
+	hv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hv.add_theme_constant_override("separation", 0)
+	var hbtn := _btn("%s %s · %s" % [str(hch["num"]), str(hch["title"]), I18n.t("гости, номера, процедуры")], _open_hotel, true)
+	hbtn.add_theme_font_size_override("font_size", 24)
+	hbtn.custom_minimum_size = Vector2(0, 44)
+	if not mode_open("idle"):
+		hbtn.disabled = true
+		hbtn.set_meta("locked", true)
+	hv.add_child(hbtn)
+	var hline := I18n.t("рейтинг ★%.1f · гостей %d") % [Hotel.stars(hs), int(hs["served"])]
+	# сколько пыльцы уже накопилось без игрока — считаем на копии состояния
+	var hres := Hotel.settle(hs.duplicate(true))
+	if int(hres["pollen"]) > 0:
+		hline += I18n.t(" · в кассе ждёт %d ✦") % int(hres["pollen"])
+	if not mode_open("idle"):
+		hline = I18n.t("нужно открыть глав: %d") % int(mode_def("idle")["unlock"])
+	hv.add_child(_lbl(hline, 18, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+	hrow.add_child(hv)
+	right.add_child(hcard)
 	var modes_btn := _btn(I18n.t("✦ Все режимы (%d) · награды за рекламу") % Modes.count(), _open_modes, true)
 	modes_btn.add_theme_font_size_override("font_size", 24)
 	modes_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -1976,7 +2018,8 @@ func _open_hotel() -> void:
 	var res := Hotel.settle(hotel_state)
 	hotel_welcome = Hotel.settle_hint(res)
 	hotel_flash = ""
-	hotel_tab = "guests"
+	hotel_tab = "rooms"
+	hotel_sel = ""
 	hotel_sel_i = -1
 	hotel_theme_for = -1
 	hotel_proc_for = -1
@@ -2052,8 +2095,75 @@ func _hotel_spend(cost: int) -> bool:
 	return true
 
 
+## что делать с кликом по сцене: выбор фей и адресные действия
+func _hotel_view_act(kind: String, a: Variant, b: Variant) -> void:
+	if ad_busy or hotel_state.is_empty():
+		return
+	match kind:
+		"queue":
+			hotel_sel = "q:%d" % int(a)
+			hotel_sel_i = int(a)
+			hotel_flash = ""
+			Sfx.play("click")
+			_build_overlay()
+		"resident":
+			hotel_sel = "r:%d:%d" % [int(a), int(b)]
+			hotel_sel_i = -1
+			hotel_flash = ""
+			Sfx.play("click")
+			_build_overlay()
+		"bed":
+			var rooms: Array = hotel_state["rooms"]
+			var room_i := int(a)
+			if room_i >= rooms.size():
+				return
+			if hotel_sel.begins_with("q:"):
+				hotel_sel_i = int(hotel_sel.substr(2))
+				_hotel_check_in(room_i)
+			else:
+				hotel_flash = I18n.t("Сначала выбери гостью на ресепшене — она подскажет, какой номер ей подходит.")
+				Sfx.play("nocharge")
+				_build_overlay()
+		"station":
+			if hotel_sel.begins_with("r:"):
+				var parts := hotel_sel.split(":")
+				_hotel_send_proc(int(parts[1]), int(parts[2]), str(a))
+			else:
+				hotel_flash = I18n.t("Сначала выбери гостью в номере — и отправь её на процедуру.")
+				Sfx.play("nocharge")
+				_build_overlay()
+		_:
+			hotel_sel = ""
+			hotel_sel_i = -1
+			hotel_flash = ""
+			_build_overlay()
+
+
+## подсказка под сценой: что делать дальше
+func _hotel_tip() -> String:
+	if hotel_sel.begins_with("q:"):
+		var i := int(hotel_sel.substr(2))
+		var queue: Array = hotel_state["queue"]
+		if i < queue.size():
+			var k := Hotel.kind_of(str((queue[i] as Dictionary)["kind"]))
+			return I18n.t("Выбрана %s: кликни по свободной кровати в номере под её вкус (%s).") % [str(k["title"]), Hotel.theme_title(str(k["theme"]))]
+	if hotel_sel.begins_with("r:"):
+		var parts := hotel_sel.split(":")
+		var rooms: Array = hotel_state["rooms"]
+		var ri := int(parts[1])
+		if ri < rooms.size():
+			var guests: Array = (rooms[ri] as Dictionary)["guests"]
+			var si := int(parts[2])
+			if si < guests.size():
+				var k2 := Hotel.kind_of(str((guests[si] as Dictionary)["kind"]))
+				return I18n.t("Выбрана %s: кликни по станции процедур (любимая — %s).") % [str(k2["title"]), Hotel.proc_title(str(k2["proc"]))]
+	return I18n.t("Кликни по фее: на ресепшене — чтобы заселить, в номере — чтобы отправить на процедуру.")
+
+
 func _hotel_done(msg: String) -> void:
 	hotel_flash = msg
+	hotel_sel = ""
+	hotel_sel_i = -1
 	hotel_welcome = ""
 	Hotel.save_state(hotel_state)
 	Sfx.play("bloom")
@@ -2065,6 +2175,7 @@ func _hotel_done(msg: String) -> void:
 ## «подобрать номер»: выбираем гостя и переходим к номерам
 func _hotel_select(i: int) -> void:
 	hotel_sel_i = i
+	hotel_sel = "q:%d" % i
 	hotel_tab = "rooms"
 	hotel_theme_for = -1
 	hotel_proc_for = -1
@@ -2320,6 +2431,15 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 		box.add_child(_lbl("✦ " + hotel_flash, 20, PINK, true))
 	elif hotel_welcome != "":
 		box.add_child(_lbl(hotel_welcome, 20, POLLEN_COL, true))
+	# сцена отеля: феи, номера и станции — выбираем курсором
+	var view: Control = HotelViewScript.new()
+	view.custom_minimum_size = Vector2(0, clampf(w * 0.46, 300.0, 430.0))
+	view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	view.state = hotel_state
+	view.sel = hotel_sel
+	view.act.connect(_hotel_view_act)
+	box.add_child(view)
+	box.add_child(_lbl(_hotel_tip(), 19, Color(Sketch.INK, 0.85), hotel_sel != ""))
 	# вкладки
 	var tabs := HBoxContainer.new()
 	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -2421,7 +2541,7 @@ func _hotel_rooms(box: VBoxContainer, _w: float) -> void:
 		var k := Hotel.kind_of(str(guest["kind"]))
 		box.add_child(_lbl(I18n.t("Заселяем %s: её окружение — %s") % [str(k["title"]), Hotel.theme_title(str(k["theme"]))], 20, PINK, true))
 	else:
-		box.add_child(_lbl(I18n.t("Выбери гостью на вкладке «Гости» или заселяй сразу — отель сам подберёт подходящую."), 18, Color(Sketch.INK, 0.75)))
+		box.add_child(_lbl(I18n.t("На сцене кликни по фее, а потом по кровати или станции. Здесь — уют, места и виды окружения."), 18, Color(Sketch.INK, 0.75)))
 	var season := Hotel.season_theme()
 	for ri in rooms.size():
 		_hotel_room_card(box, ri, rooms[ri], season)

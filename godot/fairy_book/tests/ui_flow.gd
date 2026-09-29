@@ -112,6 +112,12 @@ func _run_flow() -> void:
 		["hotel", func(): m._hotel_set_tab("guests")],
 		["hotel", func(): m._hotel_select(0)],
 		["hotel", func(): m._hotel_check_in(0)],
+		# управление курсором на сцене: выбрал фею → выбрал, куда её деть
+		["hotel", func(): m._hotel_view_act("resident", 0, 0)],
+		["hotel", func(): m._hotel_view_act("station", "tea", 0)],
+		["hotel", func(): m._hotel_view_act("queue", 0, 0)],
+		["hotel", func(): m._hotel_view_act("bed", 1, 0)],
+		["hotel", func(): m._hotel_view_act("none", 0, 0)],
 		["hotel", func(): m._hotel_open_procs(0, 0)],
 		["hotel", func(): m._hotel_send_proc(0, 0, "tea")],
 		["hotel", func(): m._hotel_set_tab("spa")],

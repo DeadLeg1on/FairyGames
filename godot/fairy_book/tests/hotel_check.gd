@@ -21,6 +21,8 @@ func _ready() -> void:
 	_check_offline()
 	_check_save()
 	_check_i18n()
+	await _check_view()
+	await _check_flow()
 	print("FAILS ", fails)
 	get_tree().quit()
 
@@ -346,3 +348,111 @@ func _check_i18n() -> void:
 	ok(chapter_en != "" and chapter_en != "Отель фей", "название главы переводится: %s" % chapter_en)
 	ok(I18n.t("Спа") == "Spa" and I18n.t("Гости") == "Guests", "кнопки отеля переведены")
 	I18n.lang = before
+
+# ------------------------------------------------------------------ сцена отеля (курсор)
+
+func _find_hit(list: Array, kind: String, a: Variant) -> Dictionary:
+	for h in list:
+		if str(h["kind"]) == kind and h["a"] == a:
+			return h
+	return {}
+
+
+## сцена: клик по фее, по кровати и по станции даёт правильные области
+func _check_view() -> void:
+	var st := Hotel.fresh()
+	Hotel.buy_theme(st, "meadow")
+	Hotel.set_theme(st, 0, "meadow")
+	Hotel.expand_room(st, 0)
+	Hotel.add_guest(st, false)
+	Hotel.add_guest(st, true)
+	Hotel.check_in(st, 0, 0)
+	ok(((st["rooms"] as Array)[0]["guests"] as Array).size() == 1, "в первом номере живёт гостья")
+
+	var v: Control = load("res://scripts/hotel_view.gd").new()
+	v.size = Vector2(920, 380)
+	add_child(v)
+	v.state = st
+	v.sel = ""
+	var got := []
+	v.act.connect(func(k: String, a: Variant, b: Variant) -> void: got.append([k, a, b]))
+	await get_tree().process_frame
+	v.layout(true)
+	var hs: Array = v.hits()
+	ok(hs.size() >= 10, "на сцене есть кликабельные области: очередь, кровати, станции (%d)" % hs.size())
+
+	var q := _find_hit(hs, "queue", 0)
+	ok(not q.is_empty(), "гостья на ресепшене кликабельна")
+	var r := v.pick((q["rect"] as Rect2).get_center())
+	ok(str(r.get("kind", "")) == "queue" and got.size() == 1 and str(got[0][0]) == "queue",
+		"клик по фее на ресепшене сообщает о выборе гостьи")
+
+	var res := _find_hit(hs, "resident", 0)
+	ok(not res.is_empty(), "жиличка в номере кликабельна")
+	v.pick((res["rect"] as Rect2).get_center())
+	ok(str(got[-1][0]) == "resident" and int(got[-1][1]) == 0 and int(got[-1][2]) == 0, "клик по жиличке сообщает её номер и место")
+
+	var bed := _find_hit(hs, "bed", 1)
+	ok(not bed.is_empty(), "свободная кровать кликабельна")
+	v.pick((bed["rect"] as Rect2).get_center())
+	ok(str(got[-1][0]) == "bed" and int(got[-1][1]) == 0 and int(got[-1][2]) == 1, "клик по свободной кровати сообщает номер и место")
+
+	var stn := _find_hit(hs, "station", "tea")
+	ok(not stn.is_empty(), "станция процедур кликабельна")
+	v.pick((stn["rect"] as Rect2).get_center())
+	ok(str(got[-1][0]) == "station" and str(got[-1][1]) == "tea", "клик по станции сообщает вид процедуры")
+
+	v.pick(Vector2(3, 3))
+	ok(str(got[-1][0]) == "none", "клик по пустому месту снимает выбор")
+	v.queue_free()
+	await get_tree().process_frame
+
+
+## весь поток управления курсором: выбрал фею → кликнул, куда её деть
+func _check_flow() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(Hotel.SETTINGS)
+	var backup: Variant = cfg.get_value(Hotel.SAVE_SECTION, Hotel.SAVE_KEY, null)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(Hotel.SETTINGS))
+
+	var m = preload("res://scripts/main.gd").new()
+	add_child(m)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	m.unlocked = 9
+	m._open_hotel()
+	Hotel.add_guest(m.hotel_state, false)
+	m._build_overlay()
+	await get_tree().process_frame
+	ok(m.hotel_sel == "", "при входе в отель никто не выбран")
+
+	m._hotel_view_act("queue", 0, 0)
+	ok(m.hotel_sel == "q:0", "клик по фее на ресепшене выбирает её")
+	ok(str(m._hotel_tip()) != "", "под сценой есть подсказка, что делать дальше")
+
+	m._hotel_view_act("bed", 0, 0)
+	var rooms: Array = m.hotel_state["rooms"]
+	ok((rooms[0]["guests"] as Array).size() == 1, "клик по кровати заселяет выбранную фею")
+	ok(m.hotel_sel == "", "после заселения выбор сброшен")
+
+	m._hotel_view_act("station", "tea", 0)
+	ok(str((m.hotel_state["rooms"] as Array)[0]["guests"][0]["proc"]) == "",
+		"без выбранной феи станция ничего не делает")
+	ok(m.hotel_flash != "", "отель объясняет, что сначала нужно выбрать гостью")
+
+	m._hotel_view_act("resident", 0, 0)
+	ok(m.hotel_sel == "r:0:0", "клик по жиличке выбирает её")
+	m._hotel_view_act("station", "tea", 0)
+	ok(str((m.hotel_state["rooms"] as Array)[0]["guests"][0]["proc"]) == "tea",
+		"клик по станции отправляет выбранную фею на процедуру")
+	m.queue_free()
+	await get_tree().process_frame
+
+	var back := ConfigFile.new()
+	back.load(Hotel.SETTINGS)
+	if backup == null:
+		if back.has_section_key(Hotel.SAVE_SECTION, Hotel.SAVE_KEY):
+			back.erase_section_key(Hotel.SAVE_SECTION, Hotel.SAVE_KEY)
+	else:
+		back.set_value(Hotel.SAVE_SECTION, Hotel.SAVE_KEY, backup)
+	back.save(Hotel.SETTINGS)
