@@ -86,11 +86,18 @@ static func count() -> int:
 	return LIST.size()
 
 
+## каталог режимов с переводом под текущий язык (кнопки, карточки, HUD)
+static func list() -> Array:
+	return I18n.tree(LIST)
+
+
 static func def(id: String) -> Dictionary:
 	for d in LIST:
 		if d["id"] == id:
-			return d
-	return LIST[0]
+			var hit: Dictionary = I18n.tree(d)
+			return hit
+	var first: Dictionary = I18n.tree(LIST[0])
+	return first
 
 
 static func has(id: String) -> bool:
@@ -157,5 +164,5 @@ static func daily_rule_id() -> int:
 
 ## короткое правило дня, чтобы игрок понимал, какие бонусы его ждут
 static func daily_rule() -> String:
-	return RULES[daily_rule_id()]
+	return str(I18n.tree(RULES)[daily_rule_id()])
 

@@ -169,5 +169,13 @@ static func count() -> int:
 	return LIST.size()
 
 
+## данные главы с переводом под текущий язык (для экранов и HUD)
 static func get_ch(i: int) -> Dictionary:
-	return LIST[clampi(i, 0, LIST.size() - 1)]
+	var raw: Dictionary = LIST[clampi(i, 0, LIST.size() - 1)]
+	var d: Dictionary = I18n.tree(raw)
+	return d
+
+
+## названия красок радужной главы на текущем языке
+static func paints() -> Array:
+	return I18n.tree(PAINTS)

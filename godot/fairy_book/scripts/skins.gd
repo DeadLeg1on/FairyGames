@@ -39,11 +39,18 @@ static func count() -> int:
 	return LIST.size()
 
 
+## каталог нарядов с переводом под текущий язык
+static func list() -> Array:
+	return I18n.tree(LIST)
+
+
 static func def(id: String) -> Dictionary:
 	for d in LIST:
 		if d["id"] == id:
-			return d
-	return LIST[0]
+			var hit: Dictionary = I18n.tree(d)
+			return hit
+	var first: Dictionary = I18n.tree(LIST[0])
+	return first
 
 
 static func title(id: String) -> String:

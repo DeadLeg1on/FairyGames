@@ -94,6 +94,12 @@ var comet := 0.0
 ## использованные за забег рекламные «добрые дела» (лечение / продление)
 var heals_used := 0
 var time_adds := 0
+## кеш главы (перевод зависит от языка, поэтому храним и язык)
+var _paints_memo: Array = []
+var _paints_memo_lang := ""
+var _ch_memo: Dictionary = {}
+var _ch_memo_idx := -1
+var _ch_memo_lang := ""
 var paint := 0 # радужная глава: текущая краска
 var seq_next := 0 # грибная глава: хоровод
 var ring_t := 0.0
@@ -150,8 +156,21 @@ var flash_rect: ColorRect
 var hud_node: Node2D
 
 
+## краски радужной главы на текущем языке (кеш — рисуются каждый кадр)
+func paints() -> Array:
+	if _paints_memo_lang != I18n.lang or _paints_memo.is_empty():
+		_paints_memo = Chapters.paints()
+		_paints_memo_lang = I18n.lang
+	return _paints_memo
+
+
+## глава с переводом под текущий язык; кеш — чтобы не собирать словарь каждый кадр
 func ch() -> Dictionary:
-	return Chapters.get_ch(ch_idx)
+	if _ch_memo_lang != I18n.lang or _ch_memo_idx != ch_idx:
+		_ch_memo = Chapters.get_ch(ch_idx)
+		_ch_memo_idx = ch_idx
+		_ch_memo_lang = I18n.lang
+	return _ch_memo
 
 
 func cid() -> String:
@@ -426,7 +445,7 @@ func revive() -> void:
 	state = St.PLAY
 	burst(px, py, 40, ch()["wing"], 300, 1)
 	ring(px, py, 120, ch()["main"])
-	pop_text(px, py - 40, "Второй шанс!", ch()["main"], 32)
+	pop_text(px, py - 40, I18n.t("Второй шанс!"), ch()["main"], 32)
 	Sfx.play("bloom")
 
 
@@ -653,7 +672,7 @@ func damage(force: bool = false) -> bool:
 		burst(px, py, 30, Color("#7a6cd6"), 280, 1)
 		burst(px, py, 14, Color("#d8f1ff"), 240, 4, 60)
 		ring(px, py, 110, Color("#b9a8e8"))
-		pop_text(px, py - 44, "Амулет спас!", Color("#7a6cd6"), 30)
+		pop_text(px, py - 44, I18n.t("Амулет спас!"), Color("#7a6cd6"), 30)
 		Sfx.play("bloom")
 		return true
 	if shield > 0:
@@ -663,7 +682,7 @@ func damage(force: bool = false) -> bool:
 		hitstop = 0.06
 		burst(px, py, 24, Color("#e86a92"), 240, 4, 120)
 		ring(px, py, 70, Color("#e86a92"))
-		pop_text(px, py - 30, "Щит!", Color("#e86a92"), 26)
+		pop_text(px, py - 30, I18n.t("Щит!"), Color("#e86a92"), 26)
 		Sfx.play("crash")
 		return true
 	hearts -= 1
@@ -686,7 +705,7 @@ func damage(force: bool = false) -> bool:
 			f.vx = cos(ang) * 220
 			f.vy = sin(ang) * 220
 			f.b = 0.8
-		pop_text(px, py - 30, "Светлячки разлетелись!", Color("#7a6cd6"), 20)
+		pop_text(px, py - 30, I18n.t("Светлячки разлетелись!"), Color("#7a6cd6"), 20)
 		followers = 0
 	if id == "star":
 		carry = 0
@@ -840,7 +859,7 @@ func _update_chapter(dt: float) -> void:
 				if wind == 0:
 					wind = (-1.0 if randf() < 0.5 else 1.0) * 190.0
 					wind_t = 2.5
-					pop_text(W / 2, 120, "Ветер →" if wind > 0 else "← Ветер", Color("#4fa3cf"), 28)
+					pop_text(W / 2, 120, I18n.t("Ветер →") if wind > 0 else I18n.t("← Ветер"), Color("#4fa3cf"), 28)
 				else:
 					wind = 0.0
 					wind_t = randf_range(4, 7)
@@ -857,7 +876,7 @@ func _update_chapter(dt: float) -> void:
 			if playing:
 				ring_t -= dt
 				if ring_t <= 0:
-					pop_text(W / 2, 120, "Хоровод рассыпался!", Color("#b0603a"), 28)
+					pop_text(W / 2, 120, I18n.t("Хоровод рассыпался!"), Color("#b0603a"), 28)
 					combo = 0
 					Sfx.play("crash")
 					for e in ents:
@@ -956,7 +975,7 @@ func _update_chapter(dt: float) -> void:
 						if carry < 3:
 							carry += 1
 							if carry == 3:
-								pop_text(px, py - 36, "Заряжена! Рывок в Короля!", Color("#b58cff"), 22)
+								pop_text(px, py - 36, I18n.t("Заряжена! Рывок в Короля!"), Color("#b58cff"), 22)
 								ring(px, py, 70, Color("#ffe89a"))
 								Sfx.play("bloom")
 						collect(e, 20, Color("#e0a526"))
@@ -1147,7 +1166,7 @@ func _update_chapter(dt: float) -> void:
 						seq_next = 0
 						combo = 0
 						burst(e.x, e.y, 16, Color("#b8a878"), 150, 0, -30)
-						pop_text(e.x, e.y - 30, "Не по порядку!", Color("#8a3b3b"), 22)
+						pop_text(e.x, e.y - 30, I18n.t("Не по порядку!"), Color("#8a3b3b"), 22)
 						shake = maxf(shake, 4.0)
 						Sfx.play("nocharge")
 			"spider":
@@ -1169,10 +1188,10 @@ func _update_chapter(dt: float) -> void:
 			"paint":
 				if paint != int(e.a) and touching(e, 4):
 					paint = int(e.a)
-					var c: Color = Chapters.PAINTS[paint]["c"]
+					var c: Color = paints()[paint]["c"]
 					burst(px, py, 18, c, 200, 0, 60)
 					ring(px, py, 40, c)
-					pop_text(px, py - 34, str(Chapters.PAINTS[paint]["n"]) + "!", c, 22)
+					pop_text(px, py - 34, str(paints()[paint]["n"]) + "!", c, 22)
 					Sfx.play("splash")
 			"bubble":
 				e.y += e.vy * dt
@@ -1184,7 +1203,7 @@ func _update_chapter(dt: float) -> void:
 					if ca == -1 or ca == paint:
 						var rb := ca == -1
 						progress += 3 if rb else 1
-						collect(e, 60 if rb else 20, Color("#b58cff") if rb else Chapters.PAINTS[ca]["c"])
+						collect(e, 60 if rb else 20, Color("#b58cff") if rb else paints()[ca]["c"])
 						if rb:
 							ring(e.x, e.y, 60, Color("#f2c230"))
 					else:
@@ -1194,8 +1213,8 @@ func _update_chapter(dt: float) -> void:
 						var dv := Vector2(px - e.x, py - e.y).normalized()
 						pvx = dv.x * 380
 						pvy = dv.y * 380
-						burst(e.x, e.y, 12, Chapters.PAINTS[ca]["c"], 180, 0)
-						pop_text(e.x, e.y - 24, "Не тот цвет! −1", Color("#8a3b3b"), 22)
+						burst(e.x, e.y, 12, paints()[ca]["c"], 180, 0)
+						pop_text(e.x, e.y - 24, I18n.t("Не тот цвет! −1"), Color("#8a3b3b"), 22)
 						shake = maxf(shake, 5.0)
 						Sfx.play("nocharge")
 			"inkbub":
@@ -1316,7 +1335,7 @@ func _update_chapter(dt: float) -> void:
 							if sd.kind == "seed" and not sd.dead and absf(sd.x - e.x) < e.r + sd.r:
 								sd.dead = true
 								burst(sd.x, sd.y, 10, Color("#c8c0b0"), 140, 0, -40)
-								pop_text(sd.x, sd.y - 20, "Пых!", Color("#5a6fa8"), 20)
+								pop_text(sd.x, sd.y - 20, I18n.t("Пых!"), Color("#5a6fa8"), 20)
 				else:
 					e.b -= dt
 					if absf(px - e.x) < e.r + pr - 4:
@@ -1351,8 +1370,8 @@ func _time_out() -> void:
 			e.dead = true
 			burst(e.x, e.y, 10, Color("#5cc7c0"), 160, 1)
 	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
-	pop_text(W / 2, H / 2 - 20, "Время вышло!", Color("#c8433b"), 46)
-	pop_text(W / 2, H / 2 + 30, "%s: %d из %d" % [ch()["goal_label"], progress, int(ch()["goal"])], Sketch.INK, 26)
+	pop_text(W / 2, H / 2 - 20, I18n.t("Время вышло!"), Color("#c8433b"), 46)
+	pop_text(W / 2, H / 2 + 30, I18n.t("%s: %d из %d") % [ch()["goal_label"], progress, int(ch()["goal"])], Sketch.INK, 26)
 	shake = 14.0
 	flash = 0.3
 	Sfx.play("over")
@@ -1368,7 +1387,7 @@ func continue_race(sec: float) -> void:
 	tick_at = -1
 	inv = 2.0
 	state = St.PLAY
-	pop_text(px, py - 44, "+%d секунд!" % int(sec), Color("#5cc7c0"), 30)
+	pop_text(px, py - 44, I18n.t("+%d секунд!") % int(sec), Color("#5cc7c0"), 30)
 	ring(px, py, 110, Color("#5cc7c0"))
 	burst(px, py, 30, Color("#5cc7c0"), 280, 1)
 	Sfx.play("bloom")
@@ -1404,14 +1423,14 @@ func _update_marathon(dt: float) -> void:
 	if wave % 3 == 0:
 		if hearts < 5:
 			hearts += 1
-			pop_text(px, py - 44, "Волна %d! +1 ♥" % wave, Color("#d8433b"), 30)
+			pop_text(px, py - 44, I18n.t("Волна %d! +1 ♥") % wave, Color("#d8433b"), 30)
 		else:
 			score += 250
-			pop_text(px, py - 44, "Волна %d! +250" % wave, ch()["main"], 30)
+			pop_text(px, py - 44, I18n.t("Волна %d! +250") % wave, ch()["main"], 30)
 		ring(px, py, 90, Color("#d8433b"))
 		Sfx.play("bloom")
 	else:
-		pop_text(px, py - 40, "Волна %d!" % wave, ch()["main"], 28)
+		pop_text(px, py - 40, I18n.t("Волна %d!") % wave, ch()["main"], 28)
 		Sfx.play("click", 0.8)
 	# подарки, чтобы было чем набирать очки
 	if randf() < 0.7 and count("pollen") + count("drop") + count("flake") + count("sun") < 6:
@@ -1442,7 +1461,7 @@ func spawn_duel_boss() -> void:
 	wave = boss_wave
 	var hp := 4 + boss_wave * 2
 	var b := spawn_hazard_boss(hp)
-	pop_text(W / 2, 120, "Король Теней — волна %d (♥%d)" % [boss_wave, hp], Color("#b58cff"), 30)
+	pop_text(W / 2, 120, I18n.t("Король Теней — волна %d (♥%d)") % [boss_wave, hp], Color("#b58cff"), 30)
 	shake = 12.0
 	Sfx.play("boom")
 	if b == null:
@@ -1471,7 +1490,7 @@ func _update_endless() -> void:
 			pop_text(px, py - 40, "+1 ♥", Color("#d8433b"), 30)
 		else:
 			score += 200
-			pop_text(px, py - 40, "Волна %d! +200" % (wave + 1), ch()["main"], 26)
+			pop_text(px, py - 40, I18n.t("Волна %d! +200") % (wave + 1), ch()["main"], 26)
 		ring(px, py, 80, Color("#d8433b"))
 		Sfx.play("bloom")
 	if cid() == "star" and count("boss") == 0:
@@ -1483,7 +1502,7 @@ func _update_endless() -> void:
 			var b := spawn("boss", side, -60, 46)
 			b.hp = 6
 			b.d = 6.0
-			pop_text(W / 2, 120, "Король Теней вернулся!", Color("#b58cff"), 30)
+			pop_text(W / 2, 120, I18n.t("Король Теней вернулся!"), Color("#b58cff"), 30)
 			shake = 10.0
 			Sfx.play("boom")
 
@@ -1519,12 +1538,12 @@ func bite_sprout(e: Ent, sp: Ent) -> void:
 		return
 	sp.hp -= 1
 	burst(sp.x, sp.y, 12, Color("#6fb04e"), 180, 4, 120)
-	pop_text(sp.x, sp.y - 40, "Хрум! −листик", Color("#8a3b3b"), 22)
+	pop_text(sp.x, sp.y - 40, I18n.t("Хрум! −листик"), Color("#8a3b3b"), 22)
 	shake = maxf(shake, 6.0)
 	Sfx.play("nocharge")
 	if sp.hp <= 0:
 		sp.hp = 3
-		pop_text(sp.x, sp.y - 64, "Росток без листьев!", Color("#c8433b"), 24)
+		pop_text(sp.x, sp.y - 64, I18n.t("Росток без листьев!"), Color("#c8433b"), 24)
 		damage(true)
 
 
@@ -1534,7 +1553,7 @@ func move_nest(n: Ent) -> void:
 	n.b = 0.0 if n.b > 0 else 1.0
 	n.x = W - 70 if n.b > 0 else 70.0
 	ring(n.x, n.y, 60, ch()["accent"])
-	pop_text(n.x, n.y - 50, "Гнездо перелетело!", ch()["main"], 22)
+	pop_text(n.x, n.y - 50, I18n.t("Гнездо перелетело!"), ch()["main"], 22)
 
 
 ## true — враг сбит рывком
@@ -1624,9 +1643,9 @@ func _update_boss(e: Ent, dt: float) -> void:
 					score += 400 * boss_wave
 					if hearts < 5:
 						hearts += 1
-						pop_text(W / 2, 150, "Король пал! +1 ♥ и +%d" % (400 * boss_wave), Color("#ffe89a"), 30)
+						pop_text(W / 2, 150, I18n.t("Король пал! +1 ♥ и +%d") % (400 * boss_wave), Color("#ffe89a"), 30)
 					else:
-						pop_text(W / 2, 150, "Король пал! +%d" % (400 * boss_wave), Color("#ffe89a"), 30)
+						pop_text(W / 2, 150, I18n.t("Король пал! +%d") % (400 * boss_wave), Color("#ffe89a"), 30)
 					burst(W / 2, H / 2, 40, Color("#b58cff"), 320, 1)
 		elif dash_t <= 0:
 			if damage():
@@ -1635,7 +1654,7 @@ func _update_boss(e: Ent, dt: float) -> void:
 				pvy = d.y * 500
 		elif carry < 3 and e.b <= 0:
 			e.b = 0.5
-			pop_text(e.x, e.y - 60, "Нужен заряд!", Sketch.INK, 22)
+			pop_text(e.x, e.y - 60, I18n.t("Нужен заряд!"), Sketch.INK, 22)
 			Sfx.play("nocharge")
 
 
@@ -1649,14 +1668,14 @@ func _clear_chapter() -> void:
 	var time_bonus := maxi(0, int((120.0 - ch_t) * 4.0))
 	last_bonus = 500 + hearts * 100 + time_bonus
 	score += last_bonus
-	pop_text(W / 2, H / 2 - 20, "Глава пройдена!", ch()["main"], 46)
-	pop_text(W / 2, H / 2 + 30, "Бонус +" + str(last_bonus), Sketch.INK, 28)
+	pop_text(W / 2, H / 2 - 20, I18n.t("Глава пройдена!"), ch()["main"], 46)
+	pop_text(W / 2, H / 2 + 30, I18n.t("Бонус +") + str(last_bonus), Sketch.INK, 28)
 	# «Гонка со временем»: отдельная награда за сэкономленные секунды
 	if is_race():
 		var left_bonus := maxi(0, int(round(time_left))) * 10
 		last_bonus += left_bonus
 		score += left_bonus
-		pop_text(W / 2, H / 2 + 66, "Запас времени +" + str(left_bonus), Color("#5cc7c0"), 26)
+		pop_text(W / 2, H / 2 + 66, I18n.t("Запас времени +") + str(left_bonus), Color("#5cc7c0"), 26)
 	for i in 5:
 		burst(randf_range(0, W), randf_range(0, H * 0.6), 20, ch()["main"] if i % 2 == 1 else ch()["accent"], 260, 4 if i % 2 == 1 else 1, 80)
 	shake = 10.0
@@ -1891,7 +1910,7 @@ func _draw_world(ci: CanvasItem) -> void:
 		var glow := (0.7 + sin(time * 10) * 0.3) if (cid() == "star" and carry >= 3) else 0.0
 		var squash := 1.15 if dash_t > 0 else 1.0
 		if cid() == "rainbow":
-			var ac: Color = Chapters.PAINTS[paint]["c"]
+			var ac: Color = paints()[paint]["c"]
 			ac.a = 0.35 + sin(time * 6) * 0.1
 			ci.draw_circle(Vector2(px, py), 24, ac)
 		# «Хвост кометы»: огненная дорожка за феей
@@ -2110,7 +2129,7 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 			Sketch.scribble(ci, e.x, e.y, e.r * 0.8, e.seed, 9, Color(0.431, 0.392, 0.235, 0.4), 1.0)
 		# ---------- VII
 		"paint":
-			var c: Color = Chapters.PAINTS[int(e.a)]["c"]
+			var c: Color = paints()[int(e.a)]["c"]
 			if paint == int(e.a):
 				var gc := c
 				gc.a = 0.25
@@ -2122,9 +2141,9 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 			if int(e.a) == -1:
 				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, null, 1.3)
 				for i in 3:
-					ci.draw_arc(Vector2(e.x, e.y), e.r - 3 - i * 3, PI * 1.1 + t, PI * 1.9 + t, 12, Chapters.PAINTS[i]["c"], 2.5, true)
+					ci.draw_arc(Vector2(e.x, e.y), e.r - 3 - i * 3, PI * 1.1 + t, PI * 1.9 + t, 12, paints()[i]["c"], 2.5, true)
 			else:
-				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, Chapters.PAINTS[int(e.a)]["c"], 1.3)
+				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, paints()[int(e.a)]["c"], 1.3)
 			ci.draw_arc(Vector2(e.x, e.y), e.r * 0.65, PI * 1.15, PI * 1.45, 6, Color(1, 1, 1, 0.85), 2.0, true)
 		"inkbub":
 			Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, Sketch.INK, 1.6)
@@ -2190,7 +2209,7 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 				Sketch.s_line(ci, x + i * 9 - 4, y - 4, x + i * 8 + 4, y + 16, e.seed + i, 0.9, Color(0.235, 0.157, 0.078, 0.5), 1)
 			Sketch.s_ellipse(ci, x, y - 6, 38, 8, e.seed + 9, Color("#d8b888"), 1.5)
 			if ch_t < 7 or e.a > 0:
-				Sketch.text(ci, x, y - 34, "Гнездо", Color("#f7e36a"), 22)
+				Sketch.text(ci, x, y - 34, I18n.t("Гнездо"), Color("#f7e36a"), 22)
 		"bolt":
 			if e.a > 0:
 				var k := 1.0 - e.a / 1.1
@@ -2272,10 +2291,10 @@ func _draw_hud(ci: CanvasItem) -> void:
 			var a := i / 5.0 * TAU + time
 			Sketch.s_ellipse(ci, sx + cos(a) * 6, pad + 16 + sin(a) * 6, 5, 3.5, 720 + i, Color("#e86a92"), 0.8)
 	# очки и серия
-	Sketch.text(ci, pad, pad + 52, "Очки: " + str(int(round(display_score))), ink, 30, -1)
+	Sketch.text(ci, pad, pad + 52, I18n.t("Очки: ") + str(int(round(display_score))), ink, 30, -1)
 	if combo >= 2:
 		var mult := mini(5, 1 + combo / 5)
-		Sketch.text(ci, pad, pad + 80, "Серия %d  ×%d" % [combo, mult], main, 22, -1)
+		Sketch.text(ci, pad, pad + 80, I18n.t("Серия %d  ×%d") % [combo, mult], main, 22, -1)
 		ci.draw_line(Vector2(pad, pad + 94), Vector2(pad + 110 * (combo_t / 2.4), pad + 94), main, 2.0, true)
 	# прогресс задания: у каждого режима свой смысл полосы
 	var cx := W / 2
@@ -2284,19 +2303,19 @@ func _draw_hud(ci: CanvasItem) -> void:
 	var frac := 0.0
 	var bar_col := main
 	if is_endless():
-		goal_txt = "%s: %d  ·  до ♥ %d" % [ch()["goal_label"], progress, next_heart_at - progress]
+		goal_txt = I18n.t("%s: %d  ·  до ♥ %d") % [ch()["goal_label"], progress, next_heart_at - progress]
 		frac = 1.0 - float(next_heart_at - progress) / ENDLESS_HEART_EVERY
 	elif is_marathon():
-		goal_txt = "Волна %d  ·  до ♥ %d" % [wave + 1, 3 - wave % 3]
+		goal_txt = I18n.t("Волна %d  ·  до ♥ %d") % [wave + 1, 3 - wave % 3]
 		frac = 1.0 - wave_t / maxf(0.001, wave_max)
 	elif is_duel():
 		var boss := boss_ent()
 		if boss != null:
 			var maxhp := int(maxf(1.0, boss.d))
-			goal_txt = "Король Теней: волна %d  ·  ♥ %d / %d" % [boss_wave, maxi(0, boss.hp), maxhp]
+			goal_txt = I18n.t("Король Теней: волна %d  ·  ♥ %d / %d") % [boss_wave, maxi(0, boss.hp), maxhp]
 			frac = 1.0 - float(maxi(0, boss.hp)) / float(maxhp)
 		else:
-			goal_txt = "Волна %d  ·  Король собирается с силами…" % (boss_wave + 1)
+			goal_txt = I18n.t("Волна %d  ·  Король собирается с силами…") % (boss_wave + 1)
 	elif is_race():
 		goal_txt = "%s: %d / %d" % [ch()["goal_label"], mini(progress, goal), goal]
 		frac = time_left / maxf(0.001, time_limit)
@@ -2315,27 +2334,27 @@ func _draw_hud(ci: CanvasItem) -> void:
 	# «Гонка со временем»: секундомер в углу
 	if is_race():
 		var warn := time_left < 10.0
-		Sketch.text(ci, W - pad, pad + 14, "%d с" % ceili(maxf(0.0, time_left)), Color("#c8433b") if warn else ink, 40, 1)
+		Sketch.text(ci, W - pad, pad + 14, I18n.t("%d с") % ceili(maxf(0.0, time_left)), Color("#c8433b") if warn else ink, 40, 1)
 	# «Марафон» и «Дуэль»: номер волны у правого края
 	if is_marathon() or is_duel():
-		Sketch.text(ci, W - pad, pad + 14, "Волна %d" % maxi(1, wave), ink, 30, 1)
+		Sketch.text(ci, W - pad, pad + 14, I18n.t("Волна %d") % maxi(1, wave), ink, 30, 1)
 	# индикатор груза
 	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3}
 	if carry_max.has(cid()):
 		var cm: int = carry_max[cid()]
 		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a")}[cid()]
-		var label: String = {"flower": "Пыльца", "water": "Вода", "star": "Заряд", "garden": "Солнце"}[cid()]
+		var label: String = {"flower": I18n.t("Пыльца"), "water": I18n.t("Вода"), "star": I18n.t("Заряд"), "garden": I18n.t("Солнце")}[cid()]
 		Sketch.text(ci, cx - cm * 16 / 2.0 - 36, by + 30, label, ink, 20)
 		for i in cm:
 			Sketch.s_circle(ci, cx - cm * 16 / 2.0 + 8 + i * 18, by + 30, 6, 200 + i, col if i < carry else null, 1.2, stroke)
 	if cid() == "night" and followers > 0:
-		Sketch.text(ci, cx, by + 30, "За тобой: %d ✦" % followers, Color("#f5e27a"), 22)
+		Sketch.text(ci, cx, by + 30, I18n.t("За тобой: %d ✦") % followers, Color("#f5e27a"), 22)
 	if cid() == "mushroom" and state == St.PLAY:
 		var warn := ring_t < ring_max * 0.3
-		Sketch.text(ci, cx, by + 30, "Хоровод: %d/5 · %d с" % [seq_next, maxi(0, ceili(ring_t))], Color("#c8433b") if warn else ink, 22)
+		Sketch.text(ci, cx, by + 30, I18n.t("Хоровод: %d/5 · %d с") % [seq_next, maxi(0, ceili(ring_t))], Color("#c8433b") if warn else ink, 22)
 	if cid() == "rainbow":
-		Sketch.text(ci, cx - 14, by + 30, "Цвет:", ink, 22)
-		Sketch.s_circle(ci, cx + 26, by + 30, 8, 250, Chapters.PAINTS[paint]["c"], 1.4, stroke)
+		Sketch.text(ci, cx - 14, by + 30, I18n.t("Цвет:"), ink, 22)
+		Sketch.s_circle(ci, cx + 26, by + 30, 8, 250, paints()[paint]["c"], 1.4, stroke)
 	# кольцо перезарядки рывка
 	if dash_cd > 0 and state == St.PLAY:
 		var c := main
@@ -2352,7 +2371,7 @@ func _draw_touch(ci: CanvasItem, _light: bool, ink: Color, stroke: Color) -> voi
 	var wing: Color = ch()["wing"]
 	wing.a = 0.75
 	Sketch.s_circle(ci, b.x, b.y, b.z * (0.92 if dash_btn_id >= 0 else 1.0), 555, wing if dash_cd <= 0 else null, 2.0, st)
-	Sketch.text(ci, b.x, b.y, "Рывок", ink, 24)
+	Sketch.text(ci, b.x, b.y, I18n.t("Рывок"), ink, 24)
 	if joy_active:
 		Sketch.s_circle(ci, joy_o.x, joy_o.y, 50, 556, null, 1.6, st)
 		var d := joy_p - joy_o
@@ -2362,4 +2381,4 @@ func _draw_touch(ci: CanvasItem, _light: bool, ink: Color, stroke: Color) -> voi
 		main.a = 0.75
 		Sketch.s_circle(ci, joy_o.x + d.x * k, joy_o.y + d.y * k, 20, 557, main, 1.6, st)
 	elif ch_t < 6:
-		Sketch.text(ci, W * 0.3, H - 90, "Веди пальцем, чтобы лететь", ink, 22)
+		Sketch.text(ci, W * 0.3, H - 90, I18n.t("Веди пальцем, чтобы лететь"), ink, 22)

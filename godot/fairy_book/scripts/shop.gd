@@ -26,6 +26,11 @@ const GARDEN_RATE := [6, 12, 20]
 const GARDEN_CAP := [40, 90, 160]
 
 
+## список улучшений с переводом под текущий язык (карточки лавки)
+static func upgrades() -> Array:
+	return I18n.tree(UPGRADES)
+
+
 static func empty() -> Dictionary:
 	var u := {}
 	for d in UPGRADES:
@@ -79,7 +84,7 @@ static func pollen_for(score_delta: int, bag: int) -> int:
 static func load_skins() -> Dictionary:
 	var owned := {}
 	var cfg := _load_cfg()
-	for d in Skins.LIST:
+	for d in Skins.list():
 		var id: String = d["id"]
 		owned[id] = true if int(d["price"]) <= 0 else bool(cfg.get_value("skins", id, false))
 	return owned

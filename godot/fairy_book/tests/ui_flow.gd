@@ -1,12 +1,12 @@
 extends Node
 ## Прогон всех режимов, экранов и переходов + проверка, что карточка помещается в экран.
-## Новые экраны: «Все режимы», «Награды за рекламу», вкладки лавки, режимы дня.
+## Новые экраны: выбор языка, «Все режимы», «Награды за рекламу», вкладки лавки, режимы дня.
 var m
 var fails := 0
 
 func _ready() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://settings.cfg"))
-	for f in Modes.LIST:
+	for f in Modes.list():
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(Scores.path_for(f["id"])))
 	m = preload("res://scripts/main.gd").new()
 	add_child(m)
@@ -23,6 +23,9 @@ func _ready() -> void:
 func _run_flow() -> void:
 	m.unlocked = 3
 	var steps := [
+		["lang", func(): m.screen = "lang"; m.lang_chosen = false; m._build_overlay()],
+		["menu", func(): m._pick_lang("en")],   # первый запуск: выбран английский
+		["menu", func(): m._toggle_lang()],     # в меню язык меняется на русский
 		["menu", func(): m._to_menu()],
 		["story", func(): m._choose_mode("story")],
 		["play", func(): m._begin_chapter()],
@@ -98,6 +101,11 @@ func _run_flow() -> void:
 		["shop", func(): m._set_shop_tab("garden")],
 		["shop", func(): m._set_shop_tab("up")],
 		["menu", func(): m._close_shop()],
+		# --- английский интерфейс -------------------------------------------
+		["menu", func(): m._toggle_lang()],      # меню по-английски
+		["shop", func(): m._open_shop()],        # лавка по-английски
+		["menu", func(): m._close_shop()],
+		["menu", func(): m._toggle_lang()],      # обратно на русский
 	]
 	for st in steps:
 		st[1].call()

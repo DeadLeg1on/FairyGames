@@ -18,6 +18,7 @@ func _ready() -> void:
 	_check_zen(g)
 	_check_daily()
 	_check_shop()
+	_check_i18n()
 	print("FAILS ", fails)
 	get_tree().quit()
 
@@ -124,15 +125,58 @@ func _check_daily() -> void:
 	Scores.remove(1, "race")
 
 
+## проверка локализации: у каждой русской строки данных есть английский перевод
+func _check_i18n() -> void:
+	var re := RegEx.new()
+	re.compile("[А-Яа-яЁё]")
+	I18n.set_lang("ru")
+	var ru: Array = []
+	_collect(Chapters.LIST, ru)
+	_collect(Chapters.PAINTS, ru)
+	_collect(Modes.LIST, ru)
+	_collect(Modes.RULES, ru)
+	_collect(Skins.LIST, ru)
+	_collect(Shop.UPGRADES, ru)
+	I18n.set_lang("en")
+	var missing := 0
+	for s in ru:
+		var txt := str(s)
+		if re.search(txt) == null or I18n.t(txt) != txt:
+			continue
+		missing += 1
+		print("     нет перевода: ", txt)
+	ok(missing == 0, "локализация: переведены все русские строки данных (%d)" % ru.size())
+	ok(I18n.t("Книга Фей") == "Fairy Book", "локализация: английский включается")
+	ok(I18n.t("Задание: ") == "Task: ", "локализация: подписи экранов переведены")
+	ok(I18n.t("Сказка") == "Story", "локализация: названия режимов переведены")
+	ok(Modes.hud_label("race") == "⏱ Time Race", "локализация: подпись HUD переведена")
+	ok(Skins.title("moon") == "Moonsilk", "локализация: название наряда переведено")
+	ok(str(Chapters.get_ch(0)["title"]) == "Petals of Dawn", "локализация: глава переведена")
+	ok(Modes.daily_rule() != "", "локализация: правило дня переведено («%s»)" % Modes.daily_rule())
+	I18n.set_lang("ru")
+
+
+## все строки внутри данных (для проверки переводов)
+func _collect(v: Variant, out: Array) -> void:
+	if v is String:
+		out.append(v)
+	elif v is Array:
+		for i in v.size():
+			_collect(v[i], out)
+	elif v is Dictionary:
+		for k in v.keys():
+			_collect(v[k], out)
+
+
 func _check_shop() -> void:
-	ok(Shop.UPGRADES.size() >= 12, "лавка: улучшений %d" % Shop.UPGRADES.size())
-	ok(Skins.LIST.size() >= 6, "наряды: %d штук" % Skins.LIST.size())
+	ok(Shop.upgrades().size() >= 12, "лавка: улучшений %d" % Shop.upgrades().size())
+	ok(Skins.list().size() >= 6, "наряды: %d штук" % Skins.list().size())
 	var u := Shop.empty()
-	for d in Shop.UPGRADES:
+	for d in Shop.upgrades():
 		ok(u.has(d["id"]), "лавка: ползунок %s на месте" % d["id"])
 	# пыльца и уровень улучшения
 	Shop.save_pollen(10000)
-	var price := Shop.price_of(Shop.UPGRADES[0], 0)
+	var price := Shop.price_of(Shop.upgrades()[0], 0)
 	Shop.save_pollen(Shop.load_pollen() - price)
 	u["heart"] = 1
 	Shop.save_upgrades(u)
