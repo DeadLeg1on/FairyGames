@@ -9,15 +9,19 @@ const PINK := Color("#c9446f")
 const GOLD := Color("#e0a526")
 const WINE := Color("#8a3b3b")
 const RED := Color("#c8433b")
-const ROMAN := ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"]
+const ROMAN := ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
 const POLLEN_COL := Color("#b08810")
 
 ## поводы для полноэкранной рекламы: как часто её можно показывать
-const AD_EVERY := {"chapter": 2, "restart": 1, "menu": 3}
+const AD_EVERY := {"chapter": 2, "restart": 1, "menu": 3, "hotel": 3}
 ## перезарядки рекламных наград (секунды)
 const AD_CHEST_CD := 180.0
 const AD_BLESS_CD := 300.0
 const AD_KEY_CD := 1800.0
+## «Отель фей»: перезарядки рекламных наград отеля
+const AD_HOTEL_CD := 180.0
+const AD_STAR_CD := 600.0
+const AD_PROCS_CD := 300.0
 ## сколько времени игрок должен отсутствовать, чтобы считать это новой сессией
 const RETURN_AFTER := 600.0
 
@@ -67,6 +71,18 @@ var ad_hint: Label
 var return_after_break := false
 ## выбран ли язык интерфейса (первый запуск показывает экран выбора)
 var lang_chosen := false
+## «Отель фей»: состояние idle-режима и служебные поля экрана
+var hotel_state := {}
+var hotel_tab := "guests"
+var hotel_live: Array[Callable] = []
+var hotel_flash := ""
+var hotel_welcome := ""
+var hotel_sel_i := -1
+var hotel_theme_for := -1
+var hotel_proc_for := -1
+var hotel_sig := ""
+var hotel_clock := 0.0
+var hotel_proc_slot := 0
 var seen_t := 0.0
 
 
@@ -100,7 +116,7 @@ func _ready() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(SETTINGS) == OK:
 		player_name = str(cfg.get_value("player", "name", I18n.t("Фея")))
-		unlocked = clampi(int(cfg.get_value("progress", "unlocked", 1)), 1, Chapters.count())
+		unlocked = clampi(int(cfg.get_value("progress", "unlocked", 1)), 1, Chapters.story_count())
 	pollen = Shop.load_pollen()
 	upgrades = Shop.load_upgrades()
 	skins = Shop.load_skins()
@@ -172,6 +188,9 @@ func _process(dt: float) -> void:
 	if ad_hint and is_instance_valid(ad_hint):
 		ad_hint.size = Vector2(vs.x, 40)
 		ad_hint.position = Vector2(0, vs.y - 44)
+	# idle-режим «Отель фей» живёт своими часами
+	if screen == "hotel":
+		_hotel_tick(dt)
 	# раз в полминуты отмечаем, что игрок ещё здесь (для «награды за возвращение»)
 	seen_t += dt
 	if seen_t > 30.0:
@@ -261,7 +280,7 @@ func _save_setting(section: String, key: String, value: Variant) -> void:
 
 
 func _unlock(n: int) -> void:
-	var v := clampi(maxi(unlocked, n), 1, Chapters.count())
+	var v := clampi(maxi(unlocked, n), 1, Chapters.story_count())
 	if v != unlocked:
 		unlocked = v
 		_save_setting("progress", "unlocked", v)
@@ -298,8 +317,8 @@ func _on_chapter_cleared(idx: int, bonus: int, score: int) -> void:
 		_record(score, idx)
 		_go("result")
 		return
-	if idx >= Chapters.count() - 1:
-		_record(score, Chapters.count())
+	if idx >= Chapters.story_count() - 1:
+		_record(score, Chapters.story_count())
 		_go("win")
 	else:
 		prev_clear = {"idx": idx, "bonus": bonus, "score": score}
@@ -325,6 +344,9 @@ func _choose_mode(m: String) -> void:
 	Sfx.play("click")
 	mode = m
 	continues = 0
+	if Modes.hotel(m):
+		_open_hotel()
+		return
 	prev_clear = {}
 	granted_score = 0
 	if m == "duel":
@@ -411,7 +433,7 @@ func _restart() -> void:
 
 
 func _next_chapter() -> void:
-	if story_idx + 1 < Chapters.count():
+	if story_idx + 1 < Chapters.story_count():
 		_pick_chapter(story_idx + 1)
 
 
@@ -558,7 +580,7 @@ func _open_rewards() -> void:
 
 ## строчка о прогрессе, саде и вызове дня на главном экране
 func _progress_hint() -> String:
-	var parts := [I18n.t("Открыто глав: %d из %d") % [unlocked, Chapters.count()]]
+	var parts := [I18n.t("Открыто глав: %d из %d") % [unlocked, Chapters.story_count()]]
 	daily = Shop.load_daily()
 	var today := str(daily["date"]) == Modes.daily_key()
 	parts.append(I18n.t("★ Вызов дня %s") % (I18n.t("пройден, серия %d дн.") % int(daily["streak"]) if today else I18n.t("ждёт")))
@@ -601,6 +623,10 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 		_pick_lang(I18n.RU)
 	elif s == "menu" and code == KEY_L:
 		_toggle_lang()
+	elif s == "hotel" and code == KEY_ESCAPE:
+		_leave_hotel()
+	elif s == "hotel" and code >= KEY_1 and code <= KEY_4:
+		_hotel_set_tab(["guests", "rooms", "spa", "up"][code - KEY_1])
 	if s == "modes" and code == KEY_ESCAPE:
 		_to_menu()
 	elif s == "rewards" and code == KEY_ESCAPE:
@@ -623,7 +649,7 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 	elif s == "select" and code >= KEY_1 and code <= KEY_9:
 		_pick_chapter(code - KEY_1)
 	elif s == "result" and (code == KEY_ENTER or code == KEY_SPACE):
-		if story_idx < Chapters.count() - 1:
+		if story_idx < Chapters.story_count() - 1:
 			_next_chapter()
 		else:
 			_restart()
@@ -665,6 +691,8 @@ func _build_overlay() -> void:
 			dim.color = Color(0.937, 0.91, 0.847, 0.35)
 		"story", "scores", "select", "shop", "modes", "rewards":
 			dim.color = Color(0.118, 0.094, 0.078, 0.25)
+		"hotel":
+			dim.color = Color(0.298, 0.196, 0.118, 0.3)
 		"win", "result":
 			dim.color = Color(1, 0.94, 0.78, 0.3)
 		_:
@@ -693,6 +721,8 @@ func _build_overlay() -> void:
 			maxw = 980.0 if wide else 560.0
 		"rewards":
 			maxw = 900.0 if wide else 560.0
+		"hotel":
+			maxw = 980.0 if wide else 560.0
 	var w := minf(maxw, vs.x - 24.0)
 
 	# карточка кладётся прямо в overlay (без контейнеров), чтобы её можно было
@@ -729,6 +759,8 @@ func _build_overlay() -> void:
 			_build_modes(box, inner_w)
 		"rewards":
 			_build_rewards(box, inner_w)
+		"hotel":
+			_build_hotel(box, inner_w)
 	_fit_card(card)
 
 
@@ -783,7 +815,7 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	var prow := HBoxContainer.new()
 	prow.alignment = BoxContainer.ALIGNMENT_CENTER
 	prow.add_theme_constant_override("separation", -20)
-	for i in Chapters.count():
+	for i in Chapters.story_count():
 		prow.add_child(_portrait(Chapters.get_ch(i), 50))
 	left.add_child(prow)
 	left.add_child(_lbl(_progress_hint(), 20, Color(Sketch.INK, 0.75)))
@@ -926,7 +958,7 @@ func _build_rewards(box: VBoxContainer, w: float) -> void:
 		blessing))
 	# ключ главы
 	var key_left := Shop.cooldown_left("key", AD_KEY_CD)
-	var all_open := unlocked >= Chapters.count()
+	var all_open := unlocked >= Chapters.story_count()
 	grid.add_child(_reward_card(
 		I18n.t("❧ Ключ главы"),
 		I18n.t("Открывает следующую главу, не проходя предыдущую. Раз в полчаса."),
@@ -956,6 +988,15 @@ func _build_rewards(box: VBoxContainer, w: float) -> void:
 		I18n.t("▶ Собрать ×2"),
 		_claim_garden.bind(true),
 		glvl <= 0 or pending <= 0,
+		false))
+	# отель фей: свои награды живут на его экране
+	grid.add_child(_reward_card(
+		I18n.t("♨ Отель фей"),
+		I18n.t("Idle-глава: приглашение редкой гостьи, мгновенные процедуры и ×2 к кассе — на экране отеля."),
+		(I18n.t("открыт: глав открыто %d") % unlocked) if mode_open("idle") else I18n.t("нужно открыть глав: %d") % 2,
+		I18n.t("▶ Открыть отель"),
+		_open_hotel,
+		not mode_open("idle"),
 		false))
 	# лечение в бою
 	grid.add_child(_reward_card(
@@ -1009,7 +1050,7 @@ func _build_select(box: VBoxContainer, w: float) -> void:
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
 	var all := Scores.load_all(mode)
-	for i in Chapters.count():
+	for i in Chapters.story_count():
 		var c := Chapters.get_ch(i)
 		var blocked := Modes.chapter_blocked(mode, i)
 		var locked := i >= unlocked or blocked
@@ -1042,9 +1083,41 @@ func _build_select(box: VBoxContainer, w: float) -> void:
 			cap = (I18n.t("рекорд %d · ⏱ %d с") % [best, int(game.chapter_time(i))]) if best >= 0 else I18n.t("⏱ %d секунд на задание") % int(game.chapter_time(i))
 		cell.add_child(_lbl(cap, 17, Color(Sketch.INK, 0.7)))
 		grid.add_child(cell)
+	# десятая глава — отдельный режим-отель, живёт вне сюжета
+	if mode == "story":
+		var hc := Chapters.get_ch(Chapters.hotel_index())
+		var hrow := PanelContainer.new()
+		var hst := StyleBoxFlat.new()
+		hst.bg_color = Color(1.0, 0.92, 0.82, 0.55)
+		hst.set_border_width_all(2)
+		hst.border_color = Color(hc["main"], 0.7)
+		hst.set_corner_radius_all(8)
+		hst.set_content_margin_all(6)
+		hrow.add_theme_stylebox_override("panel", hst)
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 8)
+		hb.alignment = BoxContainer.ALIGNMENT_CENTER
+		hrow.add_child(hb)
+		var hp := _portrait(hc, 56)
+		hp.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		if not mode_open("idle"):
+			hp.modulate = Color(0.6, 0.6, 0.6, 0.5)
+		hb.add_child(hp)
+		var hpick := _btn("%s\n%s" % [str(hc["num"]), str(hc["title"])], _open_hotel, true)
+		hpick.add_theme_font_size_override("font_size", 20)
+		hpick.custom_minimum_size = Vector2(0, 64)
+		if not mode_open("idle"):
+			hpick.disabled = true
+			hpick.set_meta("locked", true)
+		hb.add_child(hpick)
+		var hcap := I18n.t("отдельная idle-глава: гости, номера, процедуры")
+		if not mode_open("idle"):
+			hcap = I18n.t("нужно открыть глав: %d") % int(mode_def("idle")["unlock"])
+		hb.add_child(_lbl(hcap, 17, Color(Sketch.INK, 0.7), false, HORIZONTAL_ALIGNMENT_LEFT))
+		box.add_child(hrow)
 	box.add_child(grid)
 	# ключ главы: следующую главу можно открыть за рекламу
-	if unlocked < Chapters.count():
+	if unlocked < Chapters.story_count():
 		var key_left := Shop.cooldown_left("key", AD_KEY_CD)
 		var key := _small_btn(I18n.t("▶ Открыть главу %d за рекламу%s") % [unlocked + 1, "" if key_left <= 0.0 else I18n.t(" (через %d мин)") % (int(key_left) / 60 + 1)], _key_for_ad)
 		if key_left > 0.0:
@@ -1229,7 +1302,7 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 		text = I18n.t("%s · %s. Попробуй ещё раз!") % [ch["num"], ch["title"]]
 	else:
 		title = I18n.t("Сказка оборвалась…")
-		text = I18n.t("Пройдено глав: %d из %d. Но любую сказку можно рассказать заново.") % [final_chapter, Chapters.count()]
+		text = I18n.t("Пройдено глав: %d из %d. Но любую сказку можно рассказать заново.") % [final_chapter, Chapters.story_count()]
 
 	var a := VBoxContainer.new()
 	var b := VBoxContainer.new()
@@ -1256,7 +1329,7 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 			b.add_child(_btn(I18n.t("▶ %s за рекламу") % (I18n.t("Продолжить охоту") if (mode == "endless" or mode == "marathon" or mode == "duel") else I18n.t("Продолжить главу")), _continue_for_ad, true))
 	if screen == "over" and not blessing and Shop.cooldown_left("bless", AD_BLESS_CD) <= 0.0:
 		b.add_child(_small_btn(I18n.t("❀ Благословение фей на новый забег за рекламу"), _bless_for_ad))
-	if screen == "result" and story_idx < Chapters.count() - 1:
+	if screen == "result" and story_idx < Chapters.story_count() - 1:
 		b.add_child(_btn(I18n.t("Следующая глава ➜"), _next_chapter, true))
 	var btns: Array = [_small_btn(I18n.t("Ещё раз (R)"), _restart)]
 	btns.append(_small_btn(I18n.t("✦ Награды"), _open_rewards))
@@ -1327,9 +1400,11 @@ func _score_table(highlight: int, max_rows: int = 10) -> Control:
 	for i in rows:
 		var s: Dictionary = scores[i]
 		var chn := int(s.get("chapter", 0))
-		var colv: String = str(ROMAN[clampi(chn, 0, ROMAN.size() - 1)]) if single else "%d/%d" % [chn, Chapters.count()]
+		var colv: String = str(ROMAN[clampi(chn, 0, ROMAN.size() - 1)]) if single else "%d/%d" % [chn, Chapters.story_count()]
 		if tab == "marathon" or tab == "duel":
 			colv = I18n.t("в. %d") % int(s.get("wave", 0))
+		elif tab == "idle":
+			colv = I18n.t("г. %d") % int(s.get("wave", 0))
 		v.add_child(_score_row("♛" if i == 0 else str(i + 1), str(s.get("name", I18n.t("Фея"))), colv, str(int(s.get("score", 0))), i == highlight, false))
 	return v
 
@@ -1440,7 +1515,7 @@ func _chest_for_ad() -> void:
 
 ## ключ главы: открыть следующую главу за рекламу
 func _key_for_ad() -> void:
-	if ad_busy or unlocked >= Chapters.count():
+	if ad_busy or unlocked >= Chapters.story_count():
 		return
 	if Shop.cooldown_left("key", AD_KEY_CD) > 0.0:
 		Sfx.play("nocharge")
@@ -1888,3 +1963,703 @@ func _make_theme() -> Theme:
 	th.set_stylebox("grabber_pressed", "VScrollBar", sb)
 	th.set_stylebox("scroll", "VScrollBar", StyleBoxEmpty.new())
 	return th
+
+
+# ================================================================= отель фей (idle)
+
+## вход в «Отель фей»: подхватываем состояние и доначисляем офлайн-время
+func _open_hotel() -> void:
+	if ad_busy:
+		return
+	mode = "idle"
+	hotel_state = Hotel.load_state()
+	var res := Hotel.settle(hotel_state)
+	hotel_welcome = Hotel.settle_hint(res)
+	hotel_flash = ""
+	hotel_tab = "guests"
+	hotel_sel_i = -1
+	hotel_theme_for = -1
+	hotel_proc_for = -1
+	hotel_clock = 0.0
+	Hotel.save_state(hotel_state)
+	game.preview(Chapters.hotel_index())
+	Sfx.play("click")
+	_go("hotel")
+
+
+## выход из отеля: сохраняемся и (раз в несколько раз) показываем рекламу
+func _leave_hotel() -> void:
+	if not hotel_state.is_empty():
+		Hotel.save_state(hotel_state)
+	_interstitial("hotel", _to_menu)
+
+
+func _hotel_set_tab(t: String) -> void:
+	hotel_tab = t
+	hotel_theme_for = -1
+	hotel_proc_for = -1
+	Sfx.play("click")
+	_build_overlay()
+
+
+## один такт отеля: гости, проживание, процедуры, автосохранение
+func _hotel_tick(dt: float) -> void:
+	if hotel_state.is_empty():
+		return
+	Hotel.tick(hotel_state, dt)
+	hotel_clock += dt
+	if hotel_clock >= 10.0:
+		hotel_clock = 0.0
+		Hotel.save_state(hotel_state)
+	var sig := _hotel_signature()
+	if sig != hotel_sig:
+		hotel_sig = sig
+		_build_overlay()
+		return
+	for u in hotel_live:
+		u.call()
+
+
+## подпись состояния: изменилась — значит экран надо перестроить
+func _hotel_signature() -> String:
+	var beds := Hotel.beds(hotel_state)
+	var parts := []
+	var rooms: Array = hotel_state["rooms"]
+	for r in rooms:
+		parts.append(str((r["guests"] as Array).size()))
+	return "%d|%d|%d|%d|%d|%s" % [int((hotel_state["queue"] as Array).size()), int(beds[0]), int(beds[1]),
+		int(hotel_state["served"]), int(hotel_state["earned"]), ",".join(parts)]
+
+
+## подпись, которую обновляем каждый кадр без перестройки всего окна
+func _hotel_live_label(lbl: Label, fn: Callable) -> Label:
+	hotel_live.append(func() -> void:
+		if is_instance_valid(lbl):
+			lbl.text = str(fn.call()))
+	return lbl
+
+
+## покупка за пыльцу: false — не хватило
+func _hotel_spend(cost: int) -> bool:
+	if cost <= 0:
+		return true
+	if pollen < cost:
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Не хватает пыльцы: нужно %d ✦") % cost
+		_build_overlay()
+		return false
+	_add_pollen(-cost)
+	return true
+
+
+func _hotel_done(msg: String) -> void:
+	hotel_flash = msg
+	hotel_welcome = ""
+	Hotel.save_state(hotel_state)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+# ------------------------------------------------------------------ действия
+
+## «подобрать номер»: выбираем гостя и переходим к номерам
+func _hotel_select(i: int) -> void:
+	hotel_sel_i = i
+	hotel_tab = "rooms"
+	hotel_theme_for = -1
+	hotel_proc_for = -1
+	Sfx.play("click")
+	_build_overlay()
+
+
+## кого подселяем в номер: выбранного гостя, иначе первого, кому номер подходит
+func _hotel_guest_for_room(room: Dictionary) -> int:
+	var queue: Array = hotel_state["queue"]
+	if queue.is_empty():
+		return -1
+	if hotel_sel_i >= 0 and hotel_sel_i < queue.size():
+		return hotel_sel_i
+	var best := -1
+	for i in queue.size():
+		if Hotel.fits(str(queue[i]["kind"]), str(room["theme"])):
+			best = i
+			break
+	return best
+
+
+func _hotel_check_in(room_i: int) -> void:
+	if ad_busy or hotel_state.is_empty():
+		return
+	var rooms: Array = hotel_state["rooms"]
+	var room: Dictionary = rooms[room_i]
+	var qi := _hotel_guest_for_room(room)
+	if qi < 0 or Hotel.free_beds(room) <= 0:
+		Sfx.play("nocharge")
+		return
+	if not Hotel.check_in(hotel_state, qi, room_i):
+		Sfx.play("nocharge")
+		return
+	hotel_sel_i = -1
+	_hotel_done(I18n.t("Гостья заселена в номер %d!") % (room_i + 1))
+
+
+func _hotel_send_proc(room_i: int, slot: int, proc_id: String) -> void:
+	if ad_busy:
+		return
+	if not Hotel.send_proc(hotel_state, room_i, slot, proc_id):
+		Sfx.play("nocharge")
+		return
+	hotel_proc_for = -1
+	_hotel_done(I18n.t("Гостья отправилась: %s") % Hotel.proc_title(proc_id))
+
+
+func _hotel_open_theme(room_i: int) -> void:
+	hotel_theme_for = room_i if hotel_theme_for != room_i else -1
+	hotel_proc_for = -1
+	Sfx.play("click")
+	_build_overlay()
+
+
+func _hotel_open_procs(room_i: int, slot: int) -> void:
+	hotel_proc_for = room_i if hotel_proc_for != room_i else -1
+	hotel_proc_slot = slot
+	hotel_theme_for = -1
+	Sfx.play("click")
+	_build_overlay()
+
+
+## купить (если нужно) и надеть вид окружения на свободный номер
+func _hotel_apply_theme(room_i: int, theme_id: String) -> void:
+	var rooms: Array = hotel_state["rooms"]
+	if room_i < 0 or room_i >= rooms.size() or Hotel.free_beds(rooms[room_i]) < int(rooms[room_i]["slots"]):
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("В номере живут гости — сменить окружение можно после выезда.")
+		_build_overlay()
+		return
+	if not Hotel.theme_owned(hotel_state, theme_id):
+		if not _hotel_spend(Hotel.theme_price(hotel_state, theme_id)):
+			return
+		Hotel.buy_theme(hotel_state, theme_id)
+	if not Hotel.set_theme(hotel_state, room_i, theme_id):
+		Sfx.play("nocharge")
+		return
+	hotel_theme_for = -1
+	_hotel_done(I18n.t("Номер %d теперь: %s") % [room_i + 1, Hotel.theme_title(theme_id)])
+
+
+func _hotel_upgrade_room(room_i: int) -> void:
+	var rooms: Array = hotel_state["rooms"]
+	var lvl := int(rooms[room_i]["lvl"])
+	var cost := Hotel.upgrade_price(room_i, lvl)
+	if cost < 0 or not _hotel_spend(cost):
+		return
+	Hotel.upgrade_room(hotel_state, room_i)
+	_hotel_done(I18n.t("Уют номера %d вырос до %d.") % [room_i + 1, lvl + 1])
+
+
+func _hotel_expand_room(room_i: int) -> void:
+	if not _hotel_spend(Hotel.expand_price(room_i)):
+		return
+	if not Hotel.expand_room(hotel_state, room_i):
+		return
+	_hotel_done(I18n.t("В номере %d появилось второе место.") % (room_i + 1))
+
+
+func _hotel_new_room() -> void:
+	var cost := Hotel.open_room_price(hotel_state)
+	if cost < 0:
+		return
+	if not _hotel_spend(cost):
+		return
+	if not Hotel.open_room(hotel_state):
+		return
+	_hotel_done(I18n.t("Открыт новый номер! Всего номеров: %d.") % (hotel_state["rooms"] as Array).size())
+
+
+func _hotel_buy_proc(proc_id: String) -> void:
+	if not _hotel_spend(Hotel.proc_price(hotel_state, proc_id)):
+		return
+	if not Hotel.buy_proc(hotel_state, proc_id):
+		return
+	_hotel_done(I18n.t("Новая процедура: %s") % Hotel.proc_title(proc_id))
+
+
+func _hotel_buy_up(id: String) -> void:
+	var cost := Hotel.up_price(hotel_state, id)
+	if cost < 0 or not _hotel_spend(cost):
+		return
+	if not Hotel.upgrade_hotel(hotel_state, id):
+		return
+	_hotel_done(I18n.t("Улучшение отеля: %s (ур. %d)") % [str(Hotel.upgrade_of(id)["title"]), Hotel.up_level(hotel_state, id)])
+
+
+## собрать кассу в пыльцу (за рекламу — вдвое)
+func _hotel_collect(via_ad: bool) -> void:
+	if ad_busy or hotel_state.is_empty():
+		return
+	if int(hotel_state["cash"]) <= 0:
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Касса пуста — гости ещё копят пыльцу.")
+		_build_overlay()
+		return
+	if via_ad:
+		if Shop.cooldown_left("hotel_cash", AD_HOTEL_CD) > 0.0:
+			Sfx.play("nocharge")
+			hotel_flash = I18n.t("Удвоение кассы будет доступно через %d мин.") % (int(Shop.cooldown_left("hotel_cash", AD_HOTEL_CD)) / 60 + 1)
+			_build_overlay()
+			return
+		var ok: bool = await _rewarded("hotel_cash")
+		if not ok:
+			return
+		Shop.touch_cooldown("hotel_cash")
+	var got := Hotel.collect(hotel_state)
+	if via_ad:
+		got *= 2
+		# реклама ещё и включает ×2 к плате за номер на две минуты
+		Hotel.set_boost(hotel_state, 120.0)
+	_add_pollen(got)
+	_hotel_done(I18n.t("Касса собрана: +%d ✦") % got)
+
+
+## пригласить редкую гостью за рекламу
+func _hotel_star_guest() -> void:
+	if ad_busy:
+		return
+	if Shop.cooldown_left("hotel_star", AD_STAR_CD) > 0.0 or (hotel_state["queue"] as Array).size() >= Hotel.guest_cap(hotel_state):
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Позвать звезду можно, когда есть место на ресепшене и прошла перезарядка.")
+		_build_overlay()
+		return
+	var ok: bool = await _rewarded("hotel_star")
+	if not ok:
+		return
+	Shop.touch_cooldown("hotel_star")
+	Hotel.add_guest(hotel_state, true)
+	_hotel_done(I18n.t("Звёздная гостья уже на ресепшене!"))
+
+
+## мгновенно завершить все процедуры за рекламу
+func _hotel_fast_procs() -> void:
+	if ad_busy:
+		return
+	if Shop.cooldown_left("hotel_procs", AD_PROCS_CD) > 0.0:
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Ускорение процедур будет доступно через %d мин.") % (int(Shop.cooldown_left("hotel_procs", AD_PROCS_CD)) / 60 + 1)
+		_build_overlay()
+		return
+	var ok: bool = await _rewarded("hotel_procs")
+	if not ok:
+		return
+	Shop.touch_cooldown("hotel_procs")
+	var n := Hotel.finish_procs(hotel_state)
+	if n <= 0:
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Сейчас никого не надо ускорять — гости просто отдыхают.")
+		_build_overlay()
+		return
+	_hotel_done(I18n.t("Процедуры завершены сразу: %d") % n)
+
+
+## записать итоги смены в таблицу рекордов режима
+func _hotel_report() -> void:
+	var earned := int(hotel_state["earned"])
+	var reported := int(hotel_state.get("reported", 0))
+	if earned <= reported:
+		Sfx.play("nocharge")
+		hotel_flash = I18n.t("Новых гостей пока нет — смена ещё впереди.")
+		_build_overlay()
+		return
+	hotel_state["reported"] = earned
+	var entry := {
+		"name": player_name if player_name != "" else I18n.t("Фея"),
+		"score": earned,
+		"chapter": 0,
+		"wave": int(hotel_state["served"]),
+		"date": int(Time.get_unix_time_from_system() * 1000.0) * 10 + randi() % 10,
+	}
+	var res := Scores.save(entry, "idle")
+	scores = res[0]
+	scores_tab = "idle"
+	rank = res[1]
+	hotel_flash = I18n.t("Итоги смены записаны: %d ✦ · гостей %d") % [earned, int(hotel_state["served"])]
+	Hotel.save_state(hotel_state)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+# ------------------------------------------------------------------ сам экран
+
+func _build_hotel(box: VBoxContainer, w: float) -> void:
+	hotel_live.clear()
+	var st: Dictionary = hotel_state
+	if st.is_empty():
+		hotel_state = Hotel.load_state()
+		st = hotel_state
+	var beds := Hotel.beds(st)
+	box.add_child(_lbl("♨ " + I18n.t("Отель фей"), 46 if small else 52, Color("#c98a4b"), true))
+	# рейтинг, касса и гостья звезда
+	var stars := Hotel.stars(st)
+	var star_lbl := _lbl("", 22, Color("#b08810"), true)
+	star_lbl.text = I18n.t("Рейтинг ★ %.1f · отзывов %d · гостей %d") % [stars, (st["reviews"] as Array).size(), int(st["served"])]
+	box.add_child(star_lbl)
+	var cash_lbl := _hotel_live_label(_lbl("", 24, POLLEN_COL, true), func() -> String:
+		var txt := I18n.t("Касса: %d ✦ · мест %d/%d · вытяжка %d ✦/мин") % [int(hotel_state["cash"]), int(Hotel.beds(hotel_state)[0]), int(Hotel.beds(hotel_state)[1]), Hotel.flow_per_min(hotel_state)]
+		if Hotel.boost_left(hotel_state) > 0.0:
+			txt += I18n.t(" · ×2 ещё %s") % Hotel.fmt_time(Hotel.boost_left(hotel_state))
+		return txt)
+	box.add_child(cash_lbl)
+	var take := _btn_row([
+		_btn(I18n.t("Собрать"), _hotel_collect.bind(false), true),
+		_small_btn(I18n.t("▶ Собрать ×2"), _hotel_collect.bind(true)),
+	], 420)
+	box.add_child(take)
+	var season := Hotel.theme_title(Hotel.season_theme())
+	box.add_child(_lbl(I18n.t("Сезон дня: %s · за такой номер платят ×1.6") % season, 18, Color(Sketch.INK, 0.75)))
+	box.add_child(_lbl(I18n.t("Сейчас прилетают: %s") % _hotel_open_kinds(), 17, Color(Sketch.INK, 0.68)))
+	if hotel_flash != "":
+		box.add_child(_lbl("✦ " + hotel_flash, 20, PINK, true))
+	elif hotel_welcome != "":
+		box.add_child(_lbl(hotel_welcome, 20, POLLEN_COL, true))
+	# вкладки
+	var tabs := HBoxContainer.new()
+	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("separation", 8)
+	var labels := {
+		"guests": I18n.t("Гости") + " (%d)" % (st["queue"] as Array).size(),
+		"rooms": I18n.t("Номера") + " %d/%d" % [int(beds[0]), int(beds[1])],
+		"spa": I18n.t("Спа"),
+		"up": I18n.t("Отель"),
+	}
+	for td in [["guests", "☎"], ["rooms", "☾"], ["spa", "✿"], ["up", "✦"]]:
+		var b := _small_btn("%s %s" % [str(td[1]), str(labels[str(td[0])])], _hotel_set_tab.bind(str(td[0])))
+		if hotel_tab == str(td[0]):
+			b.theme_type_variation = "PrimaryButton"
+		tabs.add_child(b)
+	box.add_child(tabs)
+	match hotel_tab:
+		"rooms":
+			_hotel_rooms(box, w)
+		"spa":
+			_hotel_spa(box, w)
+		"up":
+			_hotel_ups(box, w)
+		_:
+			_hotel_guests(box, w)
+	box.add_child(_gap(4))
+	box.add_child(_btn_row([
+		_small_btn(I18n.t("✦ Награды за рекламу"), _open_rewards),
+		_small_btn(I18n.t("◷ Итоги смены"), _hotel_report),
+		_small_btn(I18n.t("✿ Лавка"), _open_shop),
+		_small_btn(I18n.t("← В меню"), _leave_hotel),
+	], 560))
+
+
+## какие гости могут прилететь при текущем рейтинге
+func _hotel_open_kinds() -> String:
+	var out := []
+	for d in Hotel.kinds():
+		if int(d["tier"]) <= Hotel.tier_max(hotel_state):
+			out.append("%s %s" % [str(d["icon"]), str(d["title"])])
+	return ", ".join(out)
+
+
+## вкладка «Гости»: очередь на ресепшене
+func _hotel_guests(box: VBoxContainer, _w: float) -> void:
+	var queue: Array = hotel_state["queue"]
+	if queue.is_empty():
+		box.add_child(_lbl(I18n.t("На ресепшене пусто. Следующая гостья прилетит через %d с.") % int(maxf(1.0, float(hotel_state["next_guest"]))), 22, Color(Sketch.INK, 0.8)))
+	else:
+		box.add_child(_lbl(I18n.t("Кто прилетел: подбери фее номер того же вида."), 19, Color(Sketch.INK, 0.75)))
+	for i in queue.size():
+		var guest: Dictionary = queue[i]
+		var k := Hotel.kind_of(str(guest["kind"]))
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var stb := StyleBoxFlat.new()
+		stb.bg_color = Color(1, 1, 1, 0.5)
+		stb.set_border_width_all(2)
+		stb.border_color = Color(Sketch.INK, 0.35)
+		stb.set_corner_radius_all(8)
+		stb.set_content_margin_all(6)
+		card.add_theme_stylebox_override("panel", stb)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		card.add_child(v)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var name_lbl := _lbl("", 21, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT)
+		# в HBox переносимой надписи нужен EXPAND_FILL, иначе её сжимает до одного слова
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx := i
+		name_lbl.text = "%s %s · %s%s" % [str(k["icon"]), str(k["title"]), I18n.t(str(k["kind"])), I18n.t(" · ★ гостья за рекламу") if bool(guest.get("vip", false)) else ""]
+		row.add_child(name_lbl)
+		var wait := _hotel_live_label(_lbl("", 19, Color("#b08810"), false, HORIZONTAL_ALIGNMENT_LEFT, false), func() -> String:
+			return I18n.t("ждёт %s") % Hotel.fmt_time(float((hotel_state["queue"] as Array)[idx]["patience"])))
+		wait.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(wait)
+		v.add_child(row)
+		v.add_child(_lbl(I18n.t(str(k["whim"])), 18, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t("ждёт номер: %s · процедура: %s") % [Hotel.theme_title(str(k["theme"])), Hotel.proc_title(str(k["proc"]))], 18, Color(Sketch.INK, 0.7), false, HORIZONTAL_ALIGNMENT_LEFT))
+		var pick := _btn(I18n.t("Подобрать номер ➜"), _hotel_select.bind(i), true)
+		pick.add_theme_font_size_override("font_size", 20)
+		pick.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		v.add_child(pick)
+		box.add_child(card)
+	box.add_child(_gap(2))
+	var star_left := Shop.cooldown_left("hotel_star", AD_STAR_CD)
+	box.add_child(_btn_row([
+		_btn(I18n.t("▶ Позвать редкую гостью") + ("" if star_left <= 0.0 else I18n.t(" (через %d мин)") % (int(star_left) / 60 + 1)), _hotel_star_guest),
+		_btn(I18n.t("▶ Ускорить процедуры") + ("" if Shop.cooldown_left("hotel_procs", AD_PROCS_CD) <= 0.0 else I18n.t(" (через %d мин)") % (int(Shop.cooldown_left("hotel_procs", AD_PROCS_CD)) / 60 + 1)), _hotel_fast_procs),
+	], 520))
+
+
+## вкладка «Номера»: заселение, уют, окружение, расширение
+func _hotel_rooms(box: VBoxContainer, _w: float) -> void:
+	var rooms: Array = hotel_state["rooms"]
+	if hotel_sel_i >= 0 and hotel_sel_i < (hotel_state["queue"] as Array).size():
+		var guest: Dictionary = (hotel_state["queue"] as Array)[hotel_sel_i]
+		var k := Hotel.kind_of(str(guest["kind"]))
+		box.add_child(_lbl(I18n.t("Заселяем %s: её окружение — %s") % [str(k["title"]), Hotel.theme_title(str(k["theme"]))], 20, PINK, true))
+	else:
+		box.add_child(_lbl(I18n.t("Выбери гостью на вкладке «Гости» или заселяй сразу — отель сам подберёт подходящую."), 18, Color(Sketch.INK, 0.75)))
+	var season := Hotel.season_theme()
+	for ri in rooms.size():
+		_hotel_room_card(box, ri, rooms[ri], season)
+	var add_cost := Hotel.open_room_price(hotel_state)
+	box.add_child(_gap(2))
+	if add_cost < 0:
+		box.add_child(_lbl(I18n.t("Все %d номеров открыты — дальше только уют и новые окружения.") % rooms.size(), 19, Color(Sketch.INK, 0.75)))
+	else:
+		box.add_child(_btn(I18n.t("+ Новый номер — %d ✦") % add_cost, _hotel_new_room, true))
+	if hotel_theme_for >= 0:
+		_hotel_theme_list(box, hotel_theme_for)
+	elif hotel_proc_for >= 0:
+		_hotel_proc_list(box, hotel_proc_for, hotel_proc_slot)
+
+
+## карточка номера
+func _hotel_room_card(box: VBoxContainer, ri: int, room: Dictionary, season: String) -> void:
+	var theme_id := str(room["theme"])
+	var lvl := int(room["lvl"])
+	var slots := int(room["slots"])
+	var guests: Array = room["guests"]
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var stb := StyleBoxFlat.new()
+	stb.bg_color = Color(1, 1, 1, 0.55)
+	stb.set_border_width_all(2)
+	stb.border_color = Color(Sketch.INK, 0.45)
+	stb.set_corner_radius_all(8)
+	stb.set_content_margin_all(6)
+	card.add_theme_stylebox_override("panel", stb)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	card.add_child(v)
+	var season_txt := I18n.t(" · сезон ×1.6") if theme_id == season else ""
+	v.add_child(_lbl(I18n.t("Номер %d · %s · уют %d · мест %d/%d%s") % [ri + 1, Hotel.theme_title(theme_id), lvl, guests.size(), slots, season_txt], 21, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+	for si in guests.size():
+		var g: Dictionary = guests[si]
+		var k := Hotel.kind_of(str(g["kind"]))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var gidx := si
+		var info := _hotel_live_label(_lbl("", 19, Color(Sketch.INK, 0.85), false, HORIZONTAL_ALIGNMENT_LEFT), func() -> String:
+			var gg: Dictionary = (hotel_state["rooms"] as Array)[ri]["guests"][gidx]
+			var proc := ""
+			if str(gg["proc"]) != "":
+				proc = I18n.t(" · %s %s") % [Hotel.proc_title(str(gg["proc"])), I18n.t("готово") if float(gg["proc_left"]) <= 0.0 else Hotel.fmt_time(float(gg["proc_left"]))]
+			return "%s %s · %s %s%s%s" % [str(Hotel.kind_of(str(gg["kind"]))["icon"]), Hotel.kind_title(str(gg["kind"])), I18n.t("выезд"), Hotel.fmt_time(float(gg["t_left"])), proc, "" if bool(gg.get("matched", false)) else I18n.t(" · не её вкус")])
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info)
+		if str(g["proc"]) == "":
+			row.add_child(_small_btn(I18n.t("▶ Процедура"), _hotel_open_procs.bind(ri, si)))
+		v.add_child(row)
+	var acts := HFlowContainer.new()
+	acts.alignment = FlowContainer.ALIGNMENT_CENTER
+	acts.add_theme_constant_override("h_separation", 6)
+	acts.add_theme_constant_override("v_separation", 4)
+	var free := Hotel.free_beds(room)
+	var hint := ""
+	if free > 0:
+		var qi := _hotel_guest_for_room(room)
+		var who := I18n.t("Заселить: нет гостей")
+		if qi >= 0:
+			var queue: Array = hotel_state["queue"]
+			var kind := str((queue[qi] as Dictionary)["kind"])
+			who = I18n.t("Заселить: %s") % Hotel.kind_title(kind)
+			hint = Hotel.fit_hint(kind, theme_id)
+		var b := _btn(who, _hotel_check_in.bind(ri), qi >= 0)
+		b.add_theme_font_size_override("font_size", 19)
+		if qi < 0:
+			b.disabled = true
+			b.set_meta("locked", true)
+		acts.add_child(b)
+	var up_cost := Hotel.upgrade_price(ri, lvl)
+	if up_cost >= 0:
+		acts.add_child(_small_btn(I18n.t("✿ Уют: %d ✦") % up_cost, _hotel_upgrade_room.bind(ri)))
+	else:
+		acts.add_child(_lbl(I18n.t("✓ уют максимальный"), 17, Color(Sketch.INK, 0.6), false, HORIZONTAL_ALIGNMENT_CENTER, false))
+	acts.add_child(_small_btn(I18n.t("❀ Сменить вид"), _hotel_open_theme.bind(ri)))
+	if slots < 2:
+		acts.add_child(_small_btn(I18n.t("⌗ Расширить: %d ✦") % Hotel.expand_price(ri), _hotel_expand_room.bind(ri)))
+	else:
+		acts.add_child(_lbl(I18n.t("✓ два места"), 17, Color(Sketch.INK, 0.6), false, HORIZONTAL_ALIGNMENT_CENTER, false))
+	v.add_child(acts)
+	if hint != "":
+		v.add_child(_lbl(hint, 17, Color(Sketch.INK, 0.7), false, HORIZONTAL_ALIGNMENT_LEFT))
+	box.add_child(card)
+
+
+## список видов окружения: покупка и примерка
+func _hotel_theme_list(box: VBoxContainer, room_i: int) -> void:
+	box.add_child(_lbl(I18n.t("Окружение для номера %d") % (room_i + 1), 22, WINE, true))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for d in Hotel.themes():
+		var id := str(d["id"])
+		var owned := Hotel.theme_owned(hotel_state, id)
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var stb := StyleBoxFlat.new()
+		stb.bg_color = Color(1, 1, 1, 0.5) if owned else Color(0.9, 0.87, 0.82, 0.45)
+		stb.set_border_width_all(2)
+		stb.border_color = Color(Sketch.INK, 0.4)
+		stb.set_corner_radius_all(8)
+		stb.set_content_margin_all(6)
+		cell.add_theme_stylebox_override("panel", stb)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+		var btn := _btn(I18n.t("Надеть") if owned else I18n.t("Купить %d ✦") % int(d["price"]), _hotel_apply_theme.bind(room_i, id), owned)
+		btn.add_theme_font_size_override("font_size", 19)
+		v.add_child(btn)
+		grid.add_child(cell)
+	box.add_child(grid)
+	box.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_theme.bind(room_i)))
+
+
+## список процедур для конкретной гостьи
+func _hotel_proc_list(box: VBoxContainer, room_i: int, slot: int) -> void:
+	box.add_child(_lbl(I18n.t("Куда отправить гостью из номера %d") % (room_i + 1), 22, WINE, true))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for d in Hotel.procs():
+		var id := str(d["id"])
+		var owned := Hotel.proc_owned(hotel_state, id)
+		var left := Hotel.proc_room_left(hotel_state, id)
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var stb := StyleBoxFlat.new()
+		stb.bg_color = Color(1, 1, 1, 0.5) if owned and left > 0 else Color(0.9, 0.87, 0.82, 0.45)
+		stb.set_border_width_all(2)
+		stb.border_color = Color(Sketch.INK, 0.4)
+		stb.set_corner_radius_all(8)
+		stb.set_content_margin_all(6)
+		cell.add_theme_stylebox_override("panel", stb)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t("%d с · +%d ✦ · мест %d/%d") % [int(Hotel.proc_dur(hotel_state, id)), int(d["pay"]), left, int(d["cap"])], 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+		var btn := _btn(I18n.t("Отправить"), _hotel_send_proc.bind(room_i, slot, id), true)
+		btn.add_theme_font_size_override("font_size", 19)
+		if not owned or left <= 0:
+			btn.disabled = true
+			btn.set_meta("locked", true)
+		v.add_child(btn)
+		grid.add_child(cell)
+	box.add_child(grid)
+	box.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_procs.bind(room_i, slot)))
+
+
+## вкладка «Спа»: покупка процедур и ускорения
+func _hotel_spa(box: VBoxContainer, _w: float) -> void:
+	box.add_child(_lbl(I18n.t("Процедуры отеля: гости платят за них отдельно, а любимую процедуру вспоминают в отзыве."), 19, Color(Sketch.INK, 0.8)))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for d in Hotel.procs():
+		var id := str(d["id"])
+		var owned := Hotel.proc_owned(hotel_state, id)
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var stb := StyleBoxFlat.new()
+		stb.bg_color = Color(1, 1, 1, 0.5) if owned else Color(0.9, 0.87, 0.82, 0.45)
+		stb.set_border_width_all(2)
+		stb.border_color = Color(Sketch.INK, 0.4)
+		stb.set_corner_radius_all(8)
+		stb.set_content_margin_all(6)
+		cell.add_theme_stylebox_override("panel", stb)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t("%d с · +%d ✦ · мест %d") % [int(Hotel.proc_dur(hotel_state, id)), int(d["pay"]), int(d["cap"])], 17, POLLEN_COL, false, HORIZONTAL_ALIGNMENT_LEFT))
+		var btn := _btn(I18n.t("Купить %d ✦") % int(d["price"]), _hotel_buy_proc.bind(id), true)
+		btn.add_theme_font_size_override("font_size", 19)
+		if owned:
+			btn.text = "✓ " + I18n.t("куплено")
+			btn.disabled = true
+			btn.set_meta("locked", true)
+		v.add_child(btn)
+		grid.add_child(cell)
+	box.add_child(grid)
+	box.add_child(_gap(2))
+	box.add_child(_btn_row([
+		_btn(I18n.t("▶ Ускорить процедуры"), _hotel_fast_procs),
+		_btn(I18n.t("▶ Позвать редкую гостью"), _hotel_star_guest),
+	], 520))
+
+
+## вкладка «Отель»: улучшения, рекорды и итоги смены
+func _hotel_ups(box: VBoxContainer, _w: float) -> void:
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for d in Hotel.upgrades():
+		var id := str(d["id"])
+		var lvl := Hotel.up_level(hotel_state, id)
+		var mx := int(d["max"])
+		var price := Hotel.up_price(hotel_state, id)
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var stb := StyleBoxFlat.new()
+		stb.bg_color = Color(1, 1, 1, 0.5)
+		stb.set_border_width_all(2)
+		stb.border_color = Color(Sketch.INK, 0.4)
+		stb.set_corner_radius_all(8)
+		stb.set_content_margin_all(6)
+		cell.add_theme_stylebox_override("panel", stb)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		var pips := ""
+		for i in mx:
+			pips += "◆" if i < lvl else "◇"
+		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(pips, 18, POLLEN_COL))
+		var btn := _btn(I18n.t("Улучшить: %d ✦") % price, _hotel_buy_up.bind(id), true)
+		btn.add_theme_font_size_override("font_size", 19)
+		if price < 0:
+			btn.text = "✓ " + I18n.t("Максимум")
+			btn.disabled = true
+			btn.set_meta("locked", true)
+		v.add_child(btn)
+		grid.add_child(cell)
+	box.add_child(grid)
+	box.add_child(_gap(2))
+	box.add_child(_lbl(I18n.t("Итоги смены уходят в таблицу рекордов режима «Отель фей»: %d ✦ и %d гостей.") % [int(hotel_state["earned"]), int(hotel_state["served"])], 19, Color(Sketch.INK, 0.75)))
+	box.add_child(_btn_row([
+		_btn(I18n.t("◷ Записать итоги смены"), _hotel_report, true),
+		_small_btn(I18n.t("★ Рекорды отеля"), _open_scores.bind("idle")),
+	], 460))

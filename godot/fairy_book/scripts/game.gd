@@ -2339,11 +2339,11 @@ func _draw_hud(ci: CanvasItem) -> void:
 	if is_marathon() or is_duel():
 		Sketch.text(ci, W - pad, pad + 14, I18n.t("Волна %d") % maxi(1, wave), ink, 30, 1)
 	# индикатор груза
-	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3}
+	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3, "hotel": 3}
 	if carry_max.has(cid()):
 		var cm: int = carry_max[cid()]
-		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a")}[cid()]
-		var label: String = {"flower": I18n.t("Пыльца"), "water": I18n.t("Вода"), "star": I18n.t("Заряд"), "garden": I18n.t("Солнце")}[cid()]
+		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a"), "hotel": Color("#c98a4b")}[cid()]
+		var label: String = {"flower": I18n.t("Пыльца"), "water": I18n.t("Вода"), "star": I18n.t("Заряд"), "garden": I18n.t("Солнце"), "hotel": I18n.t("Пыльца")}[cid()]
 		Sketch.text(ci, cx - cm * 16 / 2.0 - 36, by + 30, label, ink, 20)
 		for i in cm:
 			Sketch.s_circle(ci, cx - cm * 16 / 2.0 + 8 + i * 18, by + 30, 6, 200 + i, col if i < carry else null, 1.2, stroke)

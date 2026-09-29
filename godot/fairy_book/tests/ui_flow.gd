@@ -103,6 +103,26 @@ func _run_flow() -> void:
 		["shop", func(): m._set_shop_tab("garden")],
 		["shop", func(): m._set_shop_tab("up")],
 		["menu", func(): m._close_shop()],
+		# --- отель фей: отдельная idle-глава ---------------------------------
+		["menu", func(): _reset_hotel(); m.unlocked = 9],
+		["hotel", func(): m._choose_mode("idle")],
+		["hotel", func(): m._hotel_open_theme(0)],
+		["hotel", func(): m._hotel_apply_theme(0, "meadow")],
+		["hotel", func(): Hotel.add_guest(m.hotel_state)],
+		["hotel", func(): m._hotel_set_tab("guests")],
+		["hotel", func(): m._hotel_select(0)],
+		["hotel", func(): m._hotel_check_in(0)],
+		["hotel", func(): m._hotel_open_procs(0, 0)],
+		["hotel", func(): m._hotel_send_proc(0, 0, "tea")],
+		["hotel", func(): m._hotel_set_tab("spa")],
+		["hotel", func(): m._hotel_set_tab("up")],
+		["hotel", func(): m._hotel_buy_up("flow")],
+		["hotel", func(): m._hotel_collect(false)],
+		["hotel", func(): m._hotel_report()],
+		["hotel", func(): m._hotel_tick(1.0)],
+		["scores", func(): m._open_scores("idle")],
+		["hotel", func(): m._go("hotel")],
+		["menu", func(): m._leave_hotel()],
 		# --- английский интерфейс -------------------------------------------
 		["menu", func(): m._toggle_lang()],      # меню по-английски
 		["shop", func(): m._open_shop()],        # лавка по-английски
@@ -131,9 +151,35 @@ func _run_flow() -> void:
 				if not inside:
 					ok = false
 					fit += " OUT"
+					_dump_card(card)
 		if not ok:
 			fails += 1
 		print(("OK   " if ok else "FAIL ") + str(st[0]).rpad(7) + " mode=" + m.mode.rpad(8) + " " + fit)
+
+## перед прогоном экрана отеля: чистый отель, чтобы карточка не разрасталась
+func _reset_hotel() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(Hotel.SETTINGS)
+	if cfg.has_section_key(Hotel.SAVE_SECTION, Hotel.SAVE_KEY):
+		cfg.erase_section_key(Hotel.SAVE_SECTION, Hotel.SAVE_KEY)
+		cfg.save(Hotel.SETTINGS)
+
+
+## если карточка не помещается в экран — показываем, кто её раздувает
+func _dump_card(card: Control) -> void:
+	print("     card size=", card.size, " min=", card.get_minimum_size())
+	if card.get_child_count() == 0:
+		return
+	var box: Control = card.get_child(0)
+	for c in box.get_children():
+		var cc := c as Control
+		if cc == null:
+			continue
+		var text := ""
+		if cc is Label:
+			text = (cc as Label).text.substr(0, 40)
+		print("       ", cc.get_class(), " size=", cc.size, " min=", cc.get_minimum_size(), " ", text)
+
 
 func _wait(n: int) -> void:
 	for i in n:

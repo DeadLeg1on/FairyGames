@@ -62,6 +62,12 @@ const LIST: Array[Dictionary] = [
 		"pick": false, "story": false, "goal": true, "unlock": 2, "daily": true,
 	},
 	{
+		"id": "idle", "icon": "♨", "title": "Отель фей",
+		"desc": "Idle-глава: принимай фей, подбирай им номера и процедуры, расширяй отель. Пыльца копится даже без тебя.",
+		"short": "Отель", "hud": "♨ Отель фей", "col": "Гостей",
+		"pick": false, "story": false, "goal": false, "unlock": 2, "hotel": true,
+	},
+	{
 		"id": "zen", "icon": "☀", "title": "Тихий полёт",
 		"desc": "Ни врагов, ни урона — просто собирай и любуйся. Для самых маленьких.",
 		"short": "Тихий полёт", "hud": "☀ Тихий полёт", "col": "Глава",
@@ -134,6 +140,11 @@ static func col_label(id: String) -> String:
 	return str(def(id).get("col", "Очки"))
 
 
+## режим-отель: не полёт, а отдельный экран управления
+static func hotel(id: String) -> bool:
+	return flag(id, "hotel")
+
+
 ## глава запрещена в режиме (например, звёздная в «Тихом полёте» и «Марафоне»)
 static func chapter_blocked(id: String, chapter: int) -> bool:
 	if chapter != NO_BOSS_CHAPTER:
@@ -153,7 +164,7 @@ static func daily_key() -> String:
 
 ## глава дня: одинаковая для всех в течение суток
 static func daily_chapter(unlocked: int) -> int:
-	var n := clampi(unlocked, 1, Chapters.count())
+	var n := clampi(unlocked, 1, Chapters.story_count())
 	return absi(hash("fairy-daily-" + daily_key())) % n
 
 
