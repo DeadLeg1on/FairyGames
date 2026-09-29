@@ -28,6 +28,8 @@ var suspended := false
 var track := ""
 
 const BUDGET_USEC := 6000
+## сколько сэмплов обрабатываем за одну порцию при нормализации и кодировании
+const CHUNK := 48000
 
 var _streams := {}
 var _builts := {}
@@ -36,6 +38,8 @@ var _pending := ""
 ## текущая пошаговая сборка: {"name": String, "phase": int}
 var _job := {}
 var _job_name := ""
+## байты собираемой темы: заполняются порциями на фазе «encode»
+var _bytes := PackedByteArray()
 var _player: AudioStreamPlayer
 var _fade: Tween
 
@@ -361,28 +365,6 @@ static func _brush(at: float, amp: float, seed_i: int) -> void:
 		_buf[idx] += y * env
 
 
-static func _to_wav(buf: PackedFloat32Array) -> AudioStreamWAV:
-	var data := PackedByteArray()
-	data.resize(buf.size() * 2)
-	for i in buf.size():
-		data.encode_s16(i * 2, int(clampf(buf[i], -1.0, 1.0) * 32767.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_16_BITS
-	w.mix_rate = RATE
-	w.stereo = false
-	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	w.loop_begin = 0
-	w.loop_end = buf.size()
-	w.data = data
-	return w
-
-
-## собрать тему в петлю (кэшируется в Music)
-## сколько фаз у темы: подготовка, по фазе на такт, финал
-static func phases_of(name: String) -> int:
-	return int(themes()[name]["bars"]) + 2
-
-
 ## собрать тему целиком (синхронно): используется проверками и тестами
 func build(name: String) -> AudioStreamWAV:
 	if _builts.has(name):
@@ -408,7 +390,8 @@ func _start_job(name: String) -> void:
 	_buf = PackedFloat32Array()
 	_buf.resize(int(length_of(name) * RATE) + 1)
 	_buf.fill(0.0)
-	_job = {"name": name, "phase": 1}
+	_bytes = PackedByteArray()
+	_job = {"name": name, "state": "bars", "bar": 0, "cursor": 0, "peak": 0.0, "gain": 1.0}
 
 
 func _advance() -> void:
@@ -416,21 +399,72 @@ func _advance() -> void:
 		return
 	var name := str(_job["name"])
 	_job_name = name
-	var phase := int(_job["phase"])
 	var bars := int(themes()[name]["bars"])
-	if phase <= bars:
-		_render_bar(name, phase - 1)
-	if phase >= bars + 1:
-		_job = {}
-	else:
-		_job["phase"] = phase + 1
+	var n := _buf.size()
+	match str(_job["state"]):
+		"bars":
+			var bar := int(_job["bar"])
+			_render_bar(name, bar)
+			_job["bar"] = bar + 1
+			if bar + 1 >= bars:
+				_job["state"] = "peak"
+				_job["cursor"] = 0
+		"peak":
+			var cur := int(_job["cursor"])
+			var end := mini(n, cur + CHUNK)
+			var peak := float(_job["peak"])
+			for i in range(cur, end):
+				peak = maxf(peak, absf(_buf[i]))
+			_job["peak"] = peak
+			_job["cursor"] = end
+			if end >= n:
+				_job["gain"] = (MASTER / peak) if peak > 0.0001 else 0.0
+				_job["state"] = "scale"
+				_job["cursor"] = 0
+		"scale":
+			var cur2 := int(_job["cursor"])
+			var end2 := mini(n, cur2 + CHUNK)
+			var gain := float(_job["gain"])
+			for i in range(cur2, end2):
+				_buf[i] *= gain
+			_job["cursor"] = end2
+			if end2 >= n:
+				_bytes.resize(n * 2)
+				_job["state"] = "encode"
+				_job["cursor"] = 0
+		"encode":
+			var cur3 := int(_job["cursor"])
+			var end3 := mini(n, cur3 + CHUNK)
+			for i in range(cur3, end3):
+				_bytes.encode_s16(i * 2, int(clampf(_buf[i], -1.0, 1.0) * 32767.0))
+			_job["cursor"] = end3
+			if end3 >= n:
+				_job["state"] = "seal"
+		"seal":
+			var w := AudioStreamWAV.new()
+			w.format = AudioStreamWAV.FORMAT_16_BITS
+			w.mix_rate = RATE
+			w.stereo = false
+			w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+			w.loop_begin = 0
+			w.loop_end = n
+			w.data = _bytes
+			_job = {}
+			_store(name, w)
 
 
-## задача закончилась: нормализуем и запоминаем готовую тему
+## тема готова: запоминаем и запускаем, если её ждали
+func _store(name: String, w: AudioStreamWAV) -> void:
+	_builts[name] = w
+	_streams[name] = w
+	if _pending == name:
+		_pending = ""
+		_player.stream = w
+		_player.play()
+		_apply(true)
+
+
 func _finish_job() -> void:
-	if _job_name == "":
-		return
-	_seal(_job_name)
 	_job_name = ""
 
 
@@ -464,19 +498,3 @@ func _render_bar(name: String, bar: int) -> void:
 			_voice(float(m[0]), float(m[1]) * beat_s, float(m[2]) * beat_s * 0.96, 0.1, "flute")
 
 
-## финал: нормализация, кодирование и запуск, если тему ждали
-func _seal(name: String) -> void:
-	var total := _buf.size()
-	var peak := 0.0
-	for i in total:
-		peak = maxf(peak, absf(_buf[i]))
-	var gain := (MASTER / peak) if peak > 0.0001 else 0.0
-	for i in total:
-		_buf[i] *= gain
-	_builts[name] = _to_wav(_buf)
-	_streams[name] = _builts[name]
-	if _pending == name:
-		_pending = ""
-		_player.stream = _streams[name]
-		_player.play()
-		_apply(true)
