@@ -1,4 +1,3 @@
-class_name Music
 extends Node
 ## Процедурная музыка: три темы синтезируются в AudioStreamWAV прямо в игре —
 ## никаких аудиофайлов, как и у звуков в scripts/sfx.gd.
