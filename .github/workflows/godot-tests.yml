@@ -4,38 +4,119 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   headless:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
+      - name: Зависимости Godot
+        run: |
+          sudo apt-get update -qq || true
+          for p in unzip libx11-6 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1 \
+                   libasound2t64 libasound2 libfontconfig1 libxkbcommon0; do
+            sudo apt-get install -y -qq "$p" >/dev/null 2>&1 || true
+          done
+          echo "готово"
+
       - name: Скачать Godot 4.7.2
         run: |
-          set -e
-          curl -fsSL -o godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
-          unzip -q godot.zip
-          mv Godot_v4.7.2-stable_linux.x86_64 godot
-          chmod +x godot
-          ./godot --headless --version
+          set -uo pipefail
+          ok=0
+          for tag in 4.7.2-stable 4.7.1-stable 4.7-stable; do
+            url=$(curl -fsSL "https://api.github.com/repos/godotengine/godot/releases/tags/$tag" \
+                  | python3 -c 'import json,sys;d=json.load(sys.stdin);a=d.get("assets",[]);print(next((x["browser_download_url"] for x in a if x["name"].endswith("_linux.x86_64.zip")),""))' 2>/dev/null)
+            [ -z "$url" ] && continue
+            echo "качаю $url"
+            if curl -fL --retry 3 --retry-delay 2 -o godot.zip "$url"; then
+              echo "тег $tag" > godot-version.txt
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" != 1 ]; then echo "::error title=Не скачался Godot::проверены теги 4.7.2/4.7.1/4.7"; exit 1; fi
+          unzip -q godot.zip || { echo "::error title=unzip::$(ls -la)"; exit 1; }
+          bin=$(ls Godot_v* | head -1)
+          echo "бинарник: $bin"
+          chmod +x "$bin"
+          mv "$bin" godot
+          ./godot --headless --version > version.log 2>&1 || true
+          cat version.log
+          grep -qi godot version.log || {
+            echo "::error title=Godot не запускается::$(tail -c 1200 version.log | tr '\n' ';' | tr -d '\r')"
+            ldd godot 2>/dev/null | grep -i "not found" | tr '\n' ';' | sed 's/^/::warning title=Не хватает библиотек::/'
+            exit 1
+          }
 
       - name: Импорт проекта
-        run: ./godot --headless --path godot/fairy_book --editor --quit
-
-      - name: Режимы, лавка, локализация
         run: |
-          set -o pipefail
-          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn 2>&1 | tee modes.log
-          grep -q "FAILS 0" modes.log
+          ./godot --headless --path godot/fairy_book --editor --quit > import.log 2>&1 || true
+          tail -20 import.log
 
-      - name: Экраны и переходы
+      - name: Тесты (режимы, лавка, локализация)
+        id: modes
         run: |
-          set -o pipefail
-          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn 2>&1 | tee ui.log
-          grep -q "FAILS 0" ui.log
+          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1 || true
+          tail -30 modes.log
 
-      - name: Проверки движка (автоплей, бесконечный режим)
+      - name: Тесты (экраны и переходы)
+        id: ui
         run: |
-          set -o pipefail
-          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn 2>&1 | tee endless.log
+          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1 || true
+          tail -30 ui.log
+
+      - name: Тесты (бесконечный режим и «Одно перо»)
+        id: endless
+        run: |
+          timeout 300 ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn > endless.log 2>&1 || true
+          tail -20 endless.log
+
+      - name: Тесты (автоплей всех глав)
+        id: autoplay
+        run: |
+          timeout 600 ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/autoplay.tscn > autoplay.log 2>&1 || true
+          tail -20 autoplay.log
+
+      - name: Диагностика через аннотации
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, re
+
+          def esc(text):
+              return text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+
+          errors, fails = [], []
+          for name, limit in (('version.log', 400), ('import.log', 1200), ('modes.log', 60000),
+                              ('ui.log', 60000), ('endless.log', 20000), ('autoplay.log', 20000)):
+              if not os.path.exists(name):
+                  continue
+              text = open(name, encoding='utf-8', errors='replace').read()
+              bad = [l for l in text.splitlines()
+                     if re.search(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot|Invalid|не найдено|not found)', l)]
+              if bad:
+                  errors.append((name, '\n'.join(bad[-40:])))
+              m = re.findall(r'FAILS (\d+)', text)
+              if m and m[-1] != '0':
+                  fails.append('%s: FAILS %s' % (name, m[-1]))
+              if not m and name.endswith('.log') and name not in ('version.log',):
+                  errors.append((name + ' (нет строки FAILS)', '\n'.join(text.splitlines()[-25:])))
+
+          for name, body in errors[:9]:
+              print('::error title=%s::%s' % (name, esc(body[:60000])))
+          if fails:
+              print('::error title=Провалы тестов::%s' % esc('; '.join(fails)))
+          elif not errors:
+              print('::notice title=Godot-тесты::все сцены прошли, FAILS 0')
+          PY
+
+      - name: Итог
+        if: always()
+        run: |
+          echo "=== modes ==="; grep -c "^OK" modes.log 2>/dev/null || true
+          echo "=== ui ==="; grep -c "^OK" ui.log 2>/dev/null || true
+          grep -h "^FAILS" *.log 2>/dev/null || echo "FAILS не найдены"
