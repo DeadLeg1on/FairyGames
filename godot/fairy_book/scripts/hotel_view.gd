@@ -242,16 +242,20 @@ func _place_fairies() -> void:
 		if p == null or not is_instance_valid(p):
 			p = PortraitScript.new()
 			add_child(p)
-			p.setup(_look(str(places[key]["look"])), float(places[key]["px"]))
-			p.position = (places[key]["pos"] as Vector2) - Vector2(float(places[key]["px"]) * 0.5, float(places[key]["px"]) * 0.62)
+			var px := float(places[key]["px"])
+			p.setup(_look(str(places[key]["look"])), px)
+			p.size = Vector2(px, px)
+			p.position = (places[key]["pos"] as Vector2) - Vector2(px * 0.5, px * 0.62)
 			_portraits[key] = p
 			continue
 		var want := (places[key]["pos"] as Vector2) - Vector2(float(places[key]["px"]) * 0.5, float(places[key]["px"]) * 0.62)
 		if p.position.distance_to(want) > 0.5:
-			var tw: Tween = _tweens.get(key)
-			if tw != null and tw.is_valid():
-				tw.kill()
-			_tweens[key] = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT).tween_property(p, "position", want, 0.35)
+			var old_tw: Tween = _tweens.get(key)
+			if old_tw != null and old_tw.is_valid():
+				old_tw.kill()
+			var tw := create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			tw.tween_property(p, "position", want, 0.35)
+			_tweens[key] = tw
 
 
 func _bed(room_i: int, slot: int) -> Dictionary:
