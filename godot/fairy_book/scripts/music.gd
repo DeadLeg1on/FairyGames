@@ -27,8 +27,15 @@ var volume := 0.8
 var suspended := false
 var track := ""
 
+const BUDGET_USEC := 6000
+
 var _streams := {}
 var _builts := {}
+## тема, которую ждём: как только она соберётся — заиграет
+var _pending := ""
+## текущая пошаговая сборка: {"name": String, "phase": int}
+var _job := {}
+var _job_name := ""
 var _player: AudioStreamPlayer
 var _fade: Tween
 
@@ -62,14 +69,40 @@ static func want_for(screen: String, mode: String, in_hotel: bool = false) -> St
 
 
 func play(name: String) -> void:
-	if not _streams.has(name):
-		_streams[name] = build(name)
-	if track == name and _player.playing:
-		return
 	track = name
+	if not _streams.has(name):
+		# первая сборка идёт по кадрам, чтобы не морозить игру; как соберётся — заиграет
+		_pending = name
+		build_async(name)
+		return
+	if _player.stream == _streams[name] and _player.playing:
+		return
 	_player.stream = _streams[name]
 	_player.play()
 	_apply(true)
+
+
+func is_built(name: String) -> bool:
+	return _streams.has(name)
+
+
+## «забыть» собранную тему (нужно проверкам: сборка снова пойдёт по кадрам)
+func forget(name: String) -> void:
+	_streams.erase(name)
+	_builts.erase(name)
+	if _pending == name:
+		_pending = ""
+
+
+## пошаговая сборка: движок отдаёт по кадру, пока не закончится бюджет
+func _process(_dt: float) -> void:
+	if _job.is_empty():
+		return
+	var t0 := Time.get_ticks_usec()
+	while not _job.is_empty() and Time.get_ticks_usec() - t0 < BUDGET_USEC:
+		_advance()
+	if _job.is_empty():
+		_finish_job()
 
 
 func stop() -> void:
@@ -345,49 +378,95 @@ static func _to_wav(buf: PackedFloat32Array) -> AudioStreamWAV:
 
 
 ## собрать тему в петлю (кэшируется в Music)
+## сколько фаз у темы: подготовка, по фазе на такт, финал
+static func phases_of(name: String) -> int:
+	return int(themes()[name]["bars"]) + 2
+
+
+## собрать тему целиком (синхронно): используется проверками и тестами
 func build(name: String) -> AudioStreamWAV:
 	if _builts.has(name):
 		return _builts[name]
+	_start_job(name)
+	while not _job.is_empty():
+		_advance()
+	_finish_job()
+	return _builts[name]
+
+
+## поставить тему в очередь пошаговой сборки
+func build_async(name: String) -> void:
+	if _builts.has(name):
+		return
+	if not _job.is_empty() and str(_job["name"]) == name:
+		return
+	_start_job(name)
+
+
+func _start_job(name: String) -> void:
 	_build_tables()
+	_buf = PackedFloat32Array()
+	_buf.resize(int(length_of(name) * RATE) + 1)
+	_buf.fill(0.0)
+	_job = {"name": name, "phase": 1}
+
+
+func _advance() -> void:
+	if _job.is_empty():
+		return
+	var name := str(_job["name"])
+	_job_name = name
+	var phase := int(_job["phase"])
+	var bars := int(themes()[name]["bars"])
+	if phase <= bars:
+		_render_bar(name, phase - 1)
+	if phase >= bars + 1:
+		_job = {}
+	else:
+		_job["phase"] = phase + 1
+
+
+## задача закончилась: нормализуем и запоминаем готовую тему
+func _finish_job() -> void:
+	if _job_name == "":
+		return
+	_seal(_job_name)
+	_job_name = ""
+
+
+func _render_bar(name: String, bar: int) -> void:
 	var d: Dictionary = themes()[name]
 	var bpm := float(d["bpm"])
 	var beats := int(d["beats"])
-	var bars := int(d["bars"])
 	var beat_s := 60.0 / bpm
-	var total := int(length_of(name) * RATE) + 1
-	_buf = PackedFloat32Array()
-	_buf.resize(total)
-	_buf.fill(0.0)
+	var t0 := float(bar * beats) * beat_s
 	var chords: Array = d["chords"]
+	var chord: Array = chords[bar % chords.size()]
+	for n in chord:
+		_voice(float(n), t0, float(beats) * beat_s * 0.98, 0.05, "pad", float(n % 3) * 0.4)
 	var bass: Array = d["bass"]
+	for bt in d["bass_beats"]:
+		_voice(float(bass[bar % bass.size()]), t0 + float(bt) * beat_s, beat_s * 1.6, 0.12, "bass")
 	var pattern: Array = d["arp_pattern"]
 	var octave := int(d["arp_octave"])
-	var beats_arr: Array = d["bass_beats"]
-	var melody: Array = d["melody"]
-	for bar in bars:
-		var t0 := float(bar * beats) * beat_s
-		var chord: Array = chords[bar % chords.size()]
-		# подушка: аккорд на весь такт
-		for n in chord:
-			_voice(float(n), t0, float(beats) * beat_s * 0.98, 0.05, "pad", float(n % 3) * 0.4)
-		# щипковый бас на сильных долях
-		for bt in beats_arr:
-			_voice(float(bass[bar % bass.size()]), t0 + float(bt) * beat_s, beat_s * 1.6, 0.12, "bass")
-		# узор из терций аккорда (маримба/арфа)
-		var step := float(beats) / float(maxi(1, pattern.size()))
-		for i in pattern.size():
-			var n2: float = float(chord[int(pattern[i]) % chord.size()] + octave)
-			_voice(n2, t0 + float(i) * step * beat_s, step * beat_s * 1.3, 0.055, "harp", float(i % 2) * 0.3)
-		# лёгкая щётка
-		for bt2 in d["shaker"]:
-			_brush(t0 + float(bt2) * beat_s, 0.035, bar)
-	# колокольчики-акценты
+	var step := float(beats) / float(maxi(1, pattern.size()))
+	for i in pattern.size():
+		var n2: float = float(chord[int(pattern[i]) % chord.size()] + octave)
+		_voice(n2, t0 + float(i) * step * beat_s, step * beat_s * 1.3, 0.055, "harp", float(i % 2) * 0.3)
+	for bt2 in d["shaker"]:
+		_brush(t0 + float(bt2) * beat_s, 0.035, bar)
+	var span := float(beats)
 	for bl in d["bells"]:
-		_voice(float(bl[1]), float(bl[0]) * beat_s, 2.2, 0.075, "bell")
-	# мелодия
-	for m in melody:
-		_voice(float(m[0]), float(m[1]) * beat_s, float(m[2]) * beat_s * 0.96, 0.1, "flute")
-	# нормализация по пику: тема звучит ровно, клиппинга нет
+		if float(bl[0]) >= float(bar) * span and float(bl[0]) < float(bar + 1) * span:
+			_voice(float(bl[1]), float(bl[0]) * beat_s, 2.2, 0.075, "bell")
+	for m in d["melody"]:
+		if float(m[1]) >= float(bar) * span and float(m[1]) < float(bar + 1) * span:
+			_voice(float(m[0]), float(m[1]) * beat_s, float(m[2]) * beat_s * 0.96, 0.1, "flute")
+
+
+## финал: нормализация, кодирование и запуск, если тему ждали
+func _seal(name: String) -> void:
+	var total := _buf.size()
 	var peak := 0.0
 	for i in total:
 		peak = maxf(peak, absf(_buf[i]))
@@ -395,4 +474,9 @@ func build(name: String) -> AudioStreamWAV:
 	for i in total:
 		_buf[i] *= gain
 	_builts[name] = _to_wav(_buf)
-	return _builts[name]
+	_streams[name] = _builts[name]
+	if _pending == name:
+		_pending = ""
+		_player.stream = _streams[name]
+		_player.play()
+		_apply(true)

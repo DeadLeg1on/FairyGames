@@ -18,6 +18,7 @@ func _ready() -> void:
 	_check_themes()
 	_check_build()
 	_check_loop()
+	await _check_async()
 	_check_wiring()
 	_check_controls()
 	await _check_suspend()
@@ -177,6 +178,39 @@ func _check_loop() -> void:
 
 
 # ------------------------------------------------------------------ выбор темы
+
+## сборка темы идёт по кадрам: первая тема не морозит игру на старте
+func _check_async() -> void:
+	Music.forget("hotel")
+	var t0 := Time.get_ticks_msec()
+	Music.build_async("hotel")
+	ok(Time.get_ticks_msec() - t0 < 60, "постановка темы в очередь мгновенная (%d мс)" % (Time.get_ticks_msec() - t0))
+	ok(not Music.is_built("hotel"), "тема ещё не собрана — игра продолжает кадры")
+	var frames := 0
+	var worst := 0
+	while not Music.is_built("hotel") and frames < 900:
+		var f0 := Time.get_ticks_msec()
+		await get_tree().process_frame
+		worst = maxi(worst, Time.get_ticks_msec() - f0)
+		frames += 1
+	ok(Music.is_built("hotel"), "пошаговая сборка доходит до конца (%d кадров)" % frames)
+	ok(frames >= 2, "сборка разложена на несколько кадров, а не одним куском")
+	print("     сборка по кадрам: %d кадров, самый долгий кадр %d мс" % [frames, worst])
+	var samples := _samples("hotel")
+	ok(samples.size() > 0, "собранная по кадрам тема звучит так же, как синхронная (%d сэмплов)" % samples.size())
+
+	# тема, которую ждали, включается сама, как только собралась
+	Music.forget("story")
+	Music.play("story")
+	ok(Music.track == "story" and not Music.is_built("story"), "запрос темы до её готовности не блокирует кадр")
+	frames = 0
+	while not Music.is_built("story") and frames < 900:
+		await get_tree().process_frame
+		frames += 1
+	ok(Music.is_built("story") and Music._player.stream == Music.build("story"),
+		"как только тема собралась, она заиграла (%d кадров)" % frames)
+	Music.play("menu")
+
 
 func _check_wiring() -> void:
 	ok(Music.want_for("menu", "story") == "menu", "меню играет тему меню")
