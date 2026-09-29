@@ -183,6 +183,12 @@ func _check_loop() -> void:
 
 ## сборка темы идёт по кадрам: первая тема не морозит игру на старте
 func _check_async() -> void:
+	# сначала измерим обычные кадры: на CI-раннере они бывают неровными
+	var baseline := 0
+	for i in 12:
+		var b0 := Time.get_ticks_msec()
+		await get_tree().process_frame
+		baseline = maxi(baseline, Time.get_ticks_msec() - b0)
 	Music.forget("hotel")
 	var t0 := Time.get_ticks_msec()
 	Music.build_async("hotel")
@@ -197,8 +203,10 @@ func _check_async() -> void:
 		frames += 1
 	ok(Music.is_built("hotel"), "пошаговая сборка доходит до конца (%d кадров)" % frames)
 	ok(frames >= 2, "сборка разложена на несколько кадров, а не одним куском")
-	_async_info = {"frames": frames, "worst": worst}
-	print("     сборка по кадрам: %d кадров, самый долгий кадр %d мс" % [frames, worst])
+	_async_info = {"frames": frames, "worst": worst, "baseline": baseline}
+	print("     сборка по кадрам: %d кадров, самый долгий кадр %d мс (обычный кадр до сборки %d мс)" % [frames, worst, baseline])
+	ok(worst <= baseline * 1.6 + 40,
+		"сборка не даёт длинных кадров сверх обычных (%d против %d мс)" % [worst, baseline])
 	var samples := _samples("hotel")
 	ok(samples.size() > 0, "собранная по кадрам тема звучит так же, как синхронная (%d сэмплов)" % samples.size())
 
