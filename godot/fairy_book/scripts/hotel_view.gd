@@ -1,3 +1,4 @@
+class_name HotelView
 extends Control
 ## Визуальный «Отель фей»: рисованная сцена вместо списка кнопок.
 ##

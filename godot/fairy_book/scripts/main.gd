@@ -19,7 +19,6 @@ const AD_CHEST_CD := 180.0
 const AD_BLESS_CD := 300.0
 const AD_KEY_CD := 1800.0
 ## «Отель фей»: перезарядки рекламных наград отеля
-const HotelViewScript := preload("res://scripts/hotel_view.gd")
 const AD_HOTEL_CD := 180.0
 const AD_STAR_CD := 600.0
 const AD_PROCS_CD := 300.0
@@ -2432,7 +2431,7 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 	elif hotel_welcome != "":
 		box.add_child(_lbl(hotel_welcome, 20, POLLEN_COL, true))
 	# сцена отеля: феи, номера и станции — выбираем курсором
-	var view: Control = HotelViewScript.new()
+	var view := HotelView.new()
 	view.custom_minimum_size = Vector2(0, clampf(w * 0.34, 250.0, 330.0))
 	view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	view.state = hotel_state

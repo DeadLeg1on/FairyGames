@@ -369,7 +369,7 @@ func _check_view() -> void:
 	Hotel.check_in(st, 0, 0)
 	ok(((st["rooms"] as Array)[0]["guests"] as Array).size() == 1, "в первом номере живёт гостья")
 
-	var v: Control = load("res://scripts/hotel_view.gd").new()
+	var v := HotelView.new()
 	v.size = Vector2(920, 380)
 	add_child(v)
 	v.state = st
@@ -383,7 +383,7 @@ func _check_view() -> void:
 
 	var q := _find_hit(hs, "queue", 0)
 	ok(not q.is_empty(), "гостья на ресепшене кликабельна")
-	var r := v.pick((q["rect"] as Rect2).get_center())
+	var r: Dictionary = v.pick((q["rect"] as Rect2).get_center())
 	ok(str(r.get("kind", "")) == "queue" and got.size() == 1 and str(got[0][0]) == "queue",
 		"клик по фее на ресепшене сообщает о выборе гостьи")
 
