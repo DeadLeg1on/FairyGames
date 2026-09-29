@@ -148,9 +148,10 @@ const WASHES := {
 	"rainbow": [Color(1.0, 0.92, 0.824, 0.35), Color(0.804, 0.941, 1.0, 0.38)],
 	"garden": [Color(0.941, 0.98, 0.824, 0.35), Color(0.725, 0.882, 0.549, 0.4)],
 	"storm": [Color(0.412, 0.451, 0.588, 0.55), Color(0.275, 0.314, 0.431, 0.55)],
+	"hotel": [Color(1.0, 0.902, 0.784, 0.4), Color(0.847, 0.788, 0.667, 0.4)],
 }
-const HILL_FILL := {"flower": Color("#9cc97a"), "water": Color("#7fb8a0"), "night": Color("#3a3560"), "frost": Color("#bcd9ec"), "star": Color("#2c2450"), "mushroom": Color("#a88a58"), "rainbow": Color("#a8d890"), "garden": Color("#8cc063"), "storm": Color("#56648a")}
-const GROUND_FILL := {"flower": Color("#7fbf5a"), "water": Color("#5aa0c8"), "night": Color("#2a2848"), "frost": Color("#e6f4ff"), "star": Color("#3b2f5c"), "mushroom": Color("#8a6a45"), "rainbow": Color("#98cf7a"), "garden": Color("#7a5a3a"), "storm": Color("#4a5a76")}
+const HILL_FILL := {"hotel": Color("#b08a5a"), "flower": Color("#9cc97a"), "water": Color("#7fb8a0"), "night": Color("#3a3560"), "frost": Color("#bcd9ec"), "star": Color("#2c2450"), "mushroom": Color("#a88a58"), "rainbow": Color("#a8d890"), "garden": Color("#8cc063"), "storm": Color("#56648a")}
+const GROUND_FILL := {"hotel": Color("#8a6a45"), "flower": Color("#7fbf5a"), "water": Color("#5aa0c8"), "night": Color("#2a2848"), "frost": Color("#e6f4ff"), "star": Color("#3b2f5c"), "mushroom": Color("#8a6a45"), "rainbow": Color("#98cf7a"), "garden": Color("#7a5a3a"), "storm": Color("#4a5a76")}
 
 
 ## Фон главы (рисуется один раз и кэшируется Godot до следующего queue_redraw)

@@ -1,0 +1,208 @@
+name: Godot tests
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  headless:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Зависимости Godot
+        run: |
+          sudo apt-get update -qq || true
+          for p in unzip libx11-6 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1 \
+                   libasound2t64 libasound2 libfontconfig1 libxkbcommon0; do
+            sudo apt-get install -y -qq "$p" >/dev/null 2>&1 || true
+          done
+          echo "зависимости установлены"
+
+      # бинарник кладём под именем godot-bin: в репозитории уже есть папка godot/
+      - name: Скачать Godot
+        run: |
+          set -uo pipefail
+          ok=0
+          for tag in 4.7.2-stable 4.7.1-stable 4.7-stable; do
+            url=$(curl -fsSL "https://api.github.com/repos/godotengine/godot/releases/tags/$tag" \
+                  | python3 -c 'import json,sys;d=json.load(sys.stdin);a=d.get("assets",[]);print(next((x["browser_download_url"] for x in a if x["name"].endswith("_linux.x86_64.zip")),""))' 2>/dev/null)
+            [ -z "$url" ] && continue
+            echo "качаю $url"
+            if curl -fL --retry 3 --retry-delay 2 -o godot.zip "$url"; then
+              echo "$tag" > godot-tag.txt
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" = 1 ] || { echo "::error title=Не скачался Godot::проверены теги 4.7.2/4.7.1/4.7"; exit 1; }
+          unzip -q godot.zip || { echo "::error title=unzip::$(ls -la | head -20)"; exit 1; }
+          bin=$(ls Godot_v* | head -1)
+          echo "бинарник из архива: $bin"
+          chmod +x "$bin"
+          mv "$bin" godot-bin
+          echo "версия:"
+          ./godot-bin --headless --version 2>&1 | tee version.log
+          # Godot 4 печатает на --version только номер: 4.7.2.stable.official.<hash>
+          if ! grep -qE "^v?[0-9]+\.[0-9]+" version.log; then
+            echo "::error title=Godot не запускается::$(tail -c 1200 version.log | tr '\n' ';' | tr -d '\r')"
+            ldd godot-bin 2>/dev/null | grep -i "not found" | tr '\n' ';' | sed 's/^/::warning title=Не хватает библиотек::/' || true
+            exit 1
+          fi
+
+      - name: Импорт проекта и проверка компиляции
+        id: import
+        run: |
+          set +e
+          timeout 300 ./godot-bin --headless --path godot/fairy_book --editor --quit > import.log 2>&1
+          echo $? > import.status
+          tail -15 import.log
+          bad=$(grep -cE "Parse Error|SCRIPT ERROR|Cannot |Invalid |Failed to load" import.log)
+          if [ "$bad" = "0" ]; then echo "compile=1" >> "$GITHUB_OUTPUT"; else echo "compile=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Тесты (режимы, лавка, локализация)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1
+          echo $? > modes.status
+          tail -25 modes.log
+
+      - name: Тесты (экраны и переходы)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1
+          echo $? > ui.status
+          tail -25 ui.log
+
+      - name: Тесты (музыка — меню, главы, отель)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 240 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/music_check.tscn > music.log 2>&1
+          echo $? > music.status
+          tail -40 music.log
+
+      # темы рендерятся в wav: музыку можно послушать, не запуская игру
+      - name: Рендер тем в wav для прослушивания
+        if: steps.import.outputs.compile == '1'
+        continue-on-error: true
+        run: |
+          set +e
+          timeout 180 ./godot-bin --headless --path godot/fairy_book res://tests/music_export.tscn > music_export.log 2>&1
+          echo $? > music_export.status
+          tail -12 music_export.log
+          ls -la godot/fairy_book/music_export 2>/dev/null || echo "wav не появились"
+
+      - name: Тесты (отель фей — idle-глава)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 180 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/hotel_check.tscn > hotel.log 2>&1
+          echo $? > hotel.status
+          tail -30 hotel.log
+
+      - name: Тесты (бесконечный режим и «Одно перо»)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 240 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn > endless.log 2>&1
+          echo $? > endless.status
+          tail -15 endless.log
+
+      - name: Тесты (автоплей глав)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 600 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/autoplay.tscn > autoplay.log 2>&1
+          echo $? > autoplay.status
+          tail -15 autoplay.log
+
+      # Диагностика уходит в аннотации check-run: их можно прочитать через API
+      # даже там, где сам архив логов недоступен.
+      - name: Диагностика через аннотации
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+
+          def esc(text):
+              return text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+
+          PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory|не найдено)')
+          # только эти сцены печатают итоговую строку FAILS
+          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log', 'music.log')
+          TESTS = ('modes.log', 'ui.log', 'music.log', 'hotel.log', 'endless.log', 'autoplay.log')
+          errors, fails, ok_count = [], [], {}
+
+          for name in ('version.log', 'import.log') + TESTS:
+              if not os.path.exists(name):
+                  if name == 'import.log':
+                      errors.append((name + ' (нет файла)', 'импорт не выполнялся'))
+                  continue
+              text = open(name, encoding='utf-8', errors='replace').read()
+              bad = [l for l in text.splitlines() if PROBLEM.search(l)]
+              status = name.replace('.log', '.status')
+              code = open(status).read().strip() if os.path.exists(status) else '0'
+
+              if bad:
+                  errors.append((name, '\n'.join(bad[-60:])))
+              if name in TESTS:
+                  ok_count[name] = len(re.findall(r'^OK ', text, re.M))
+              if name in FAILS_TESTS:
+                  m = re.findall(r'FAILS (\d+)', text)
+                  if not m:
+                      errors.append((name + ' (нет строки FAILS)', '\n'.join(text.splitlines()[-30:])))
+                  elif m[-1] != '0':
+                      fails.append('%s: FAILS %s, OK %s' % (name, m[-1], ok_count.get(name, 0)))
+              if code not in ('0', ''):
+                  errors.append((status, 'код выхода %s\n%s' % (code, '\n'.join(text.splitlines()[-20:]))))
+
+          # полные логи тестов, где есть провалы — чтобы причина была видна целиком
+          for name in TESTS:
+              if os.path.exists(name) and (name in [f.split(':')[0] for f in fails] or name in [e[0] for e in errors]):
+                  text = open(name, encoding='utf-8', errors='replace').read()
+                  if len(text) < 60000:
+                      print('::error title=%s (полный лог)::%s' % (name, esc(text)))
+
+          for name, body in errors[:8]:
+              print('::error title=%s::%s' % (name, esc(body[:60000])))
+          if fails:
+              print('::error title=Провалы тестов::%s' % esc('; '.join(fails)))
+
+          total = sum(ok_count.values())
+          if errors or fails:
+              print('::warning title=Итог::OK-проверок: %d; проблемных сообщений: %d' % (total, len(errors)))
+              sys.exit(1)
+          print('::notice title=Godot-тесты пройдены::OK-проверок: %s' % ', '.join('%s=%d' % (k, v) for k, v in ok_count.items()))
+          # хвосты сцен без строки FAILS — чтобы результат был виден в аннотации
+          for name in ('music.log', 'hotel.log', 'endless.log', 'autoplay.log'):
+              if os.path.exists(name):
+                  tail = '\n'.join(open(name, encoding='utf-8', errors='replace').read().splitlines()[-12:])
+                  print('::notice title=%s::%s' % (name, esc(tail[:4000])))
+          PY
+
+      - name: Сохранить музыку (артефакт)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-wav
+          path: "godot/fairy_book/music_export/*.wav"
+          if-no-files-found: warn
+
+      - name: Сохранить логи (артефакт)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-logs
+          path: "*.log"
+          if-no-files-found: ignore

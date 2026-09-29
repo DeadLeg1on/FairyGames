@@ -35,10 +35,12 @@ func set_muted(m: bool) -> void:
 	_apply_bus()
 
 
-## глушит звук во время рекламы / паузы платформы
+## глушит звук во время рекламы / паузы платформы (и музыку тоже)
 func suspend(on: bool) -> void:
 	suspended = on
 	_apply_bus()
+	if Music != null:
+		Music.suspend(on)
 
 
 func _apply_bus() -> void:

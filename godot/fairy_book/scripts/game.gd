@@ -15,6 +15,13 @@ const LIGHT_TEXT := Color("#f3ecdc")
 const LIGHT_STROKE := Color(0.941, 0.902, 1.0, 0.9)
 ## каждые N выполненных целей в бесконечном режиме — сердце
 const ENDLESS_HEART_EVERY := 10
+## враги, которых можно выпускать в любом режиме (не зависят от целей главы)
+const HAZARD_POOL := ["wasp", "moth", "orb", "inkbub", "spider", "icicle", "bolt"]
+## как часто «Марафон» выпускает волну и сколько врагов в ней
+const WAVE_FIRST := 4.0
+const WAVE_MIN := 5.0
+## снаряды/враги волн, которые требуют особой настройки при спавне
+const HAZARD_RADIUS := {"wasp": 14.0, "moth": 16.0, "orb": 9.0, "inkbub": 16.0, "spider": 13.0, "icicle": 10.0, "bolt": 28.0}
 
 
 class Ent:
@@ -65,7 +72,34 @@ var hearts := 3
 var mode := "story"
 ## купленные в лавке улучшения
 var upgrades := Shop.empty()
+## надетый наряд феи (id из Skins.LIST)
+var skin := "classic"
+## «благословение фей» за рекламу: +1 щит и +15% очков на забег
+var blessing := 0.0
 var shield := 0
+## таймер «Гонки со временем»
+var time_left := 0.0
+var time_limit := 0.0
+var time_failed := false
+var tick_at := -1
+## «Марафон»: время до следующей волны
+var wave_t := 0.0
+var wave_max := WAVE_FIRST
+## «Дуэль»: номер волны Короля Теней
+var boss_wave := 0
+## страховки и счётчики улучшений
+var amulet_used := false
+var horn_n := 0
+var comet := 0.0
+## использованные за забег рекламные «добрые дела» (лечение / продление)
+var heals_used := 0
+var time_adds := 0
+## кеш главы (перевод зависит от языка, поэтому храним и язык)
+var _paints_memo: Array = []
+var _paints_memo_lang := ""
+var _ch_memo: Dictionary = {}
+var _ch_memo_idx := -1
+var _ch_memo_lang := ""
 var paint := 0 # радужная глава: текущая краска
 var seq_next := 0 # грибная глава: хоровод
 var ring_t := 0.0
@@ -122,8 +156,21 @@ var flash_rect: ColorRect
 var hud_node: Node2D
 
 
+## краски радужной главы на текущем языке (кеш — рисуются каждый кадр)
+func paints() -> Array:
+	if _paints_memo_lang != I18n.lang or _paints_memo.is_empty():
+		_paints_memo = Chapters.paints()
+		_paints_memo_lang = I18n.lang
+	return _paints_memo
+
+
+## глава с переводом под текущий язык; кеш — чтобы не собирать словарь каждый кадр
 func ch() -> Dictionary:
-	return Chapters.get_ch(ch_idx)
+	if _ch_memo_lang != I18n.lang or _ch_memo_idx != ch_idx:
+		_ch_memo = Chapters.get_ch(ch_idx)
+		_ch_memo_idx = ch_idx
+		_ch_memo_lang = I18n.lang
+	return _ch_memo
 
 
 func cid() -> String:
@@ -209,10 +256,42 @@ func new_run(m: String = "") -> void:
 	display_score = 0.0
 	hearts = max_start_hearts()
 	combo = 0
+	wave = 0
+	next_heart_at = ENDLESS_HEART_EVERY
+	boss_wave = 0
+	amulet_used = false
+	horn_n = 0
+	comet = 0.0
+	heals_used = 0
+	time_adds = 0
+	time_left = 0.0
+	time_failed = false
+	tick_at = -1
+	wave_t = WAVE_FIRST
+	wave_max = WAVE_FIRST
 
 
 func max_start_hearts() -> int:
-	return 1 if mode == "hard" else 3 + int(upgrades["heart"])
+	if mode == "hard":
+		return 1
+	if mode == "zen":
+		return 5
+	return 3 + int(upgrades["heart"])
+
+
+## сколько щитов даёт начало главы (щит из лавки + благословение за рекламу
+## + правило дня «Ежедневного вызова»)
+func start_shield() -> int:
+	if mode == "hard":
+		return 0
+	var n := 0
+	if int(upgrades["shield"]) > 0:
+		n += 1
+	if blessing > 0.0:
+		n += 1
+	if is_daily() and Modes.daily_rule_id() == 2:
+		n += 1
+	return n
 
 
 func dash_cd_max() -> float:
@@ -239,13 +318,54 @@ func is_endless() -> bool:
 	return mode == "endless"
 
 
+func is_race() -> bool:
+	return mode == "race"
+
+
+func is_marathon() -> bool:
+	return mode == "marathon"
+
+
+func is_duel() -> bool:
+	return mode == "duel"
+
+
+func is_daily() -> bool:
+	return mode == "daily"
+
+
+func is_zen() -> bool:
+	return mode == "zen"
+
+
+## нужен ли режиму счётчик выполненной цели (в «Марафоне» и «Дуэли» его нет)
+func needs_goal() -> bool:
+	return not (is_marathon() or is_duel())
+
+
+## бюджет времени главы для «Гонки» с учётом часов из лавки
+func chapter_time(idx: int) -> float:
+	var base := float(Chapters.get_ch(idx).get("time", 90))
+	return base * (1.0 + 0.12 * int(upgrades["clock"]))
+
+
+## цвета феи с учётом надетого наряда
+func look_ch() -> Dictionary:
+	var c := ch().duplicate()
+	for k in Skins.look(skin, time).keys():
+		c[k] = Skins.look(skin, time)[k]
+	return c
+
+
 func score_mult() -> int:
-	return 2 if mode == "hard" else 1
+	if mode == "hard" or mode == "daily":
+		return 2
+	return 1
 
 
-## перезапуск текущего режима (одиночная глава / бесконечный — та же глава)
+## перезапуск текущего режима (одиночные режимы — та же глава)
 func restart() -> void:
-	var idx := ch_idx if (mode == "chapter" or mode == "endless") else 0
+	var idx := ch_idx if (Modes.pick(mode) or is_duel() or is_daily()) else 0
 	new_run()
 	start_chapter(idx)
 
@@ -275,13 +395,33 @@ func start_chapter(idx: int) -> void:
 	dash_cd = 0.0
 	inv = 1.2
 	carry = 0
-	shield = 1 if (mode != "hard" and int(upgrades["shield"]) > 0) else 0
+	shield = start_shield()
 	paint = 0
 	seq_next = 0
 	facing = 1.0
 	trail.clear()
 	dash_queued = false
+	amulet_used = false
+	horn_n = 0
+	comet = 0.0
+	heals_used = 0
+	time_adds = 0
+	time_failed = false
+	tick_at = -1
+	# «Ежедневный вызов» — одинаковые условия для всех: сид от даты
+	if is_daily():
+		seed(absi(hash("fairy-run-" + Modes.daily_key())))
+	if is_race():
+		time_limit = chapter_time(idx)
+		time_left = time_limit
+	if is_marathon():
+		wave_t = WAVE_FIRST
+		wave_max = WAVE_FIRST
+	if is_duel():
+		boss_wave = 0
 	_init_chapter()
+	if is_duel():
+		spawn_duel_boss()
 	state = St.PLAY
 	burst(px, py, 24, ch()["wing"], 220, 1)
 	ring(px, py, 60, ch()["main"])
@@ -305,7 +445,7 @@ func revive() -> void:
 	state = St.PLAY
 	burst(px, py, 40, ch()["wing"], 300, 1)
 	ring(px, py, 120, ch()["main"])
-	pop_text(px, py - 40, "Второй шанс!", ch()["main"], 32)
+	pop_text(px, py - 40, I18n.t("Второй шанс!"), ch()["main"], 32)
 	Sfx.play("bloom")
 
 
@@ -385,7 +525,43 @@ func spawn(kind: String, x: float, y: float, r: float) -> Ent:
 	e.r = r
 	e.seed = seed_counter * 1.618
 	seed_counter += 1
+	# «Тихий полёт» — глава без врагов: опасные существа просто не появляются
+	if is_zen() and (HAZARDS.has(kind) or kind == "boss"):
+		e.dead = true
+		return e
 	ents.append(e)
+	return e
+
+
+## враг для волн «Марафона»/«Дуэли»: у каждого вида свои поля (глубина, замах)
+func spawn_hazard(kind: String) -> Ent:
+	var from_left := randf() < 0.5
+	var x := -30.0 if from_left else W + 30.0
+	var e := spawn(kind, x, randf_range(110, gy() - 60), float(HAZARD_RADIUS.get(kind, 12.0)))
+	match kind:
+		"spider":
+			e.d = randf_range(140, gy() - 50)
+			e.a = randf() * 6
+		"icicle":
+			e.x = randf_range(40, W - 40)
+			e.y = -10
+			e.a = 0.9
+		"bolt":
+			e.x = randf_range(30, W - 30)
+			e.y = 0
+			e.a = 1.1
+		"inkbub":
+			e.x = randf_range(40, W - 40)
+			e.y = gy() + 20
+			e.vy = -randf_range(50, 85)
+		"orb":
+			e.x = randf_range(40, W - 40)
+			e.y = randf_range(90, H * 0.5)
+			var a := randf() * TAU
+			e.vx = cos(a) * 150
+			e.vy = sin(a) * 150
+		_:
+			e.a = randf() * 6
 	return e
 
 
@@ -455,8 +631,17 @@ func add_score(pts: int, x: float, y: float, col: Color) -> int:
 	combo += 1
 	combo_t = 2.4
 	var mult := mini(5, 1 + combo / 5)
-	var v := pts * mult * score_mult()
+	var v := int(round(pts * mult * score_mult() * (1.0 + 0.05 * int(upgrades["luck"]) + blessing)))
 	score += v
+	# «Колокольчик»: каждые N целей — сердце
+	var step := 10 - 3 * (int(upgrades["bell"]) - 1) if int(upgrades["bell"]) > 0 else 0
+	if step > 0:
+		horn_n += 1
+		if horn_n % step == 0 and hearts < 5:
+			hearts += 1
+			pop_text(px, py - 40, "♪ +1 ♥", Color("#d8433b"), 26)
+			ring(px, py, 70, Color("#d8433b"))
+			Sfx.play("bloom")
 	pop_text(x, y - 14, "+" + str(v) + ((" ×" + str(mult)) if mult > 1 else ""), col, 18 + mult * 2)
 	return v
 
@@ -474,6 +659,22 @@ func collect(e: Ent, pts: int, col: Color) -> void:
 func damage(force: bool = false) -> bool:
 	if (not force and (inv > 0 or dash_t > 0)) or state != St.PLAY:
 		return false
+	# «Тихий полёт» — режим без урона
+	if is_zen():
+		return false
+	# «Хрустальный амулет» — один раз за забег спасает от гибели
+	if hearts <= 1 and int(upgrades["amulet"]) > 0 and not amulet_used:
+		amulet_used = true
+		hearts = 1
+		inv = 2.6
+		shake = 14.0
+		hitstop = 0.08
+		burst(px, py, 30, Color("#7a6cd6"), 280, 1)
+		burst(px, py, 14, Color("#d8f1ff"), 240, 4, 60)
+		ring(px, py, 110, Color("#b9a8e8"))
+		pop_text(px, py - 44, I18n.t("Амулет спас!"), Color("#7a6cd6"), 30)
+		Sfx.play("bloom")
+		return true
 	if shield > 0:
 		shield = 0
 		inv = 1.0
@@ -481,7 +682,7 @@ func damage(force: bool = false) -> bool:
 		hitstop = 0.06
 		burst(px, py, 24, Color("#e86a92"), 240, 4, 120)
 		ring(px, py, 70, Color("#e86a92"))
-		pop_text(px, py - 30, "Щит!", Color("#e86a92"), 26)
+		pop_text(px, py - 30, I18n.t("Щит!"), Color("#e86a92"), 26)
 		Sfx.play("crash")
 		return true
 	hearts -= 1
@@ -504,7 +705,7 @@ func damage(force: bool = false) -> bool:
 			f.vx = cos(ang) * 220
 			f.vy = sin(ang) * 220
 			f.b = 0.8
-		pop_text(px, py - 30, "Светлячки разлетелись!", Color("#7a6cd6"), 20)
+		pop_text(px, py - 30, I18n.t("Светлячки разлетелись!"), Color("#7a6cd6"), 20)
 		followers = 0
 	if id == "star":
 		carry = 0
@@ -521,6 +722,14 @@ func damage(force: bool = false) -> bool:
 
 func _t(k: String) -> float:
 	return float(timers.get(k, 0.0))
+
+
+## живой босс (для «Дуэли» и полосы здоровья в HUD)
+func boss_ent() -> Ent:
+	for e in ents:
+		if e.kind == "boss" and not e.dead:
+			return e
+	return null
 
 
 # ================================================================= главы
@@ -558,8 +767,10 @@ func _init_chapter() -> void:
 			timers["flake"] = 0.3
 			timers["crystal"] = 7.0
 		"star":
-			var boss := spawn("boss", W * 0.7, H * 0.3, 46)
-			boss.hp = 6
+			if not is_duel():
+				var boss := spawn("boss", W * 0.7, H * 0.3, 46)
+				boss.hp = 6
+				boss.d = 6.0
 			for i in 3:
 				spawn("shard", px + 70 + i * 55, py + (-40 if i % 2 == 1 else 40), 10).a = randf() * 6
 			timers["attack"] = 3.0
@@ -648,7 +859,7 @@ func _update_chapter(dt: float) -> void:
 				if wind == 0:
 					wind = (-1.0 if randf() < 0.5 else 1.0) * 190.0
 					wind_t = 2.5
-					pop_text(W / 2, 120, "Ветер →" if wind > 0 else "← Ветер", Color("#4fa3cf"), 28)
+					pop_text(W / 2, 120, I18n.t("Ветер →") if wind > 0 else I18n.t("← Ветер"), Color("#4fa3cf"), 28)
 				else:
 					wind = 0.0
 					wind_t = randf_range(4, 7)
@@ -656,15 +867,16 @@ func _update_chapter(dt: float) -> void:
 				var x := -20.0 if wind > 0 else W + 20
 				add_particle(_part(x, randf_range(60, gy()), wind * 4, 0, 0.8, 40 + randf() * 40, Color(0.314, 0.471, 0.627, 0.5), 5, 0))
 		"star":
-			if playing and count("shard") < 2 and _t("shard") <= 0:
+			var shard_max := 4 if is_duel() else 2
+			if playing and count("shard") < shard_max and _t("shard") <= 0:
 				var p := rand_pos()
 				spawn("shard", p.x, p.y, 10).a = randf() * 6
-				timers["shard"] = 1.2
+				timers["shard"] = 0.8 if is_duel() else 1.2
 		"mushroom":
 			if playing:
 				ring_t -= dt
 				if ring_t <= 0:
-					pop_text(W / 2, 120, "Хоровод рассыпался!", Color("#b0603a"), 28)
+					pop_text(W / 2, 120, I18n.t("Хоровод рассыпался!"), Color("#b0603a"), 28)
 					combo = 0
 					Sfx.play("crash")
 					for e in ents:
@@ -754,19 +966,19 @@ func _update_chapter(dt: float) -> void:
 					if e.kind == "pollen":
 						if carry < 6:
 							carry += 1
-							collect(e, 10, accent)
+						collect(e, 10, accent)
 					elif e.kind == "drop":
 						if carry < 5:
 							carry += 1
-							collect(e, 10, Color("#3a8fd6"))
+						collect(e, 10, Color("#3a8fd6"))
 					else:
 						if carry < 3:
 							carry += 1
-							collect(e, 20, Color("#e0a526"))
 							if carry == 3:
-								pop_text(px, py - 36, "Заряжена! Рывок в Короля!", Color("#b58cff"), 22)
+								pop_text(px, py - 36, I18n.t("Заряжена! Рывок в Короля!"), Color("#b58cff"), 22)
 								ring(px, py, 70, Color("#ffe89a"))
 								Sfx.play("bloom")
+						collect(e, 20, Color("#e0a526"))
 			"bud":
 				# бесконечный режим: цветок снова становится бутоном
 				if is_endless() and e.b == 1 and e.t > 2.5:
@@ -954,7 +1166,7 @@ func _update_chapter(dt: float) -> void:
 						seq_next = 0
 						combo = 0
 						burst(e.x, e.y, 16, Color("#b8a878"), 150, 0, -30)
-						pop_text(e.x, e.y - 30, "Не по порядку!", Color("#8a3b3b"), 22)
+						pop_text(e.x, e.y - 30, I18n.t("Не по порядку!"), Color("#8a3b3b"), 22)
 						shake = maxf(shake, 4.0)
 						Sfx.play("nocharge")
 			"spider":
@@ -976,10 +1188,10 @@ func _update_chapter(dt: float) -> void:
 			"paint":
 				if paint != int(e.a) and touching(e, 4):
 					paint = int(e.a)
-					var c: Color = Chapters.PAINTS[paint]["c"]
+					var c: Color = paints()[paint]["c"]
 					burst(px, py, 18, c, 200, 0, 60)
 					ring(px, py, 40, c)
-					pop_text(px, py - 34, str(Chapters.PAINTS[paint]["n"]) + "!", c, 22)
+					pop_text(px, py - 34, str(paints()[paint]["n"]) + "!", c, 22)
 					Sfx.play("splash")
 			"bubble":
 				e.y += e.vy * dt
@@ -991,7 +1203,7 @@ func _update_chapter(dt: float) -> void:
 					if ca == -1 or ca == paint:
 						var rb := ca == -1
 						progress += 3 if rb else 1
-						collect(e, 60 if rb else 20, Color("#b58cff") if rb else Chapters.PAINTS[ca]["c"])
+						collect(e, 60 if rb else 20, Color("#b58cff") if rb else paints()[ca]["c"])
 						if rb:
 							ring(e.x, e.y, 60, Color("#f2c230"))
 					else:
@@ -1001,8 +1213,8 @@ func _update_chapter(dt: float) -> void:
 						var dv := Vector2(px - e.x, py - e.y).normalized()
 						pvx = dv.x * 380
 						pvy = dv.y * 380
-						burst(e.x, e.y, 12, Chapters.PAINTS[ca]["c"], 180, 0)
-						pop_text(e.x, e.y - 24, "Не тот цвет! −1", Color("#8a3b3b"), 22)
+						burst(e.x, e.y, 12, paints()[ca]["c"], 180, 0)
+						pop_text(e.x, e.y - 24, I18n.t("Не тот цвет! −1"), Color("#8a3b3b"), 22)
 						shake = maxf(shake, 5.0)
 						Sfx.play("nocharge")
 			"inkbub":
@@ -1123,7 +1335,7 @@ func _update_chapter(dt: float) -> void:
 							if sd.kind == "seed" and not sd.dead and absf(sd.x - e.x) < e.r + sd.r:
 								sd.dead = true
 								burst(sd.x, sd.y, 10, Color("#c8c0b0"), 140, 0, -40)
-								pop_text(sd.x, sd.y - 20, "Пых!", Color("#5a6fa8"), 20)
+								pop_text(sd.x, sd.y - 20, I18n.t("Пых!"), Color("#5a6fa8"), 20)
 				else:
 					e.b -= dt
 					if absf(px - e.x) < e.r + pr - 4:
@@ -1139,10 +1351,131 @@ func _update_chapter(dt: float) -> void:
 					e.dead = true
 
 	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
-	if is_endless():
+	if is_duel():
+		_update_duel(dt)
+	elif is_marathon():
+		_update_marathon(dt)
+	elif is_endless():
 		_update_endless()
-	elif state == St.PLAY and progress >= int(ch()["goal"]):
+	if needs_goal() and state == St.PLAY and progress >= int(ch()["goal"]):
 		_clear_chapter()
+
+
+## «Гонка со временем»: время вышло — забег окончен (сердца не тронуты)
+func _time_out() -> void:
+	time_failed = true
+	state = St.OVER
+	for e in ents:
+		if HAZARDS.has(e.kind) or e.kind == "boss":
+			e.dead = true
+			burst(e.x, e.y, 10, Color("#5cc7c0"), 160, 1)
+	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
+	pop_text(W / 2, H / 2 - 20, I18n.t("Время вышло!"), Color("#c8433b"), 46)
+	pop_text(W / 2, H / 2 + 30, I18n.t("%s: %d из %d") % [ch()["goal_label"], progress, int(ch()["goal"])], Sketch.INK, 26)
+	shake = 14.0
+	flash = 0.3
+	Sfx.play("over")
+	game_over.emit(score, ch_idx)
+
+
+## продлить гонку за рекламу: возвращает фею в бой с запасом секунд
+func continue_race(sec: float) -> void:
+	if not is_race():
+		return
+	time_failed = false
+	time_left = maxf(time_left, sec)
+	tick_at = -1
+	inv = 2.0
+	state = St.PLAY
+	pop_text(px, py - 44, I18n.t("+%d секунд!") % int(sec), Color("#5cc7c0"), 30)
+	ring(px, py, 110, Color("#5cc7c0"))
+	burst(px, py, 30, Color("#5cc7c0"), 280, 1)
+	Sfx.play("bloom")
+
+
+## +1 сердце за рекламу (в паузе), не больше трёх раз за забег
+func heal(force: bool = false) -> bool:
+	if not force and (heals_used >= 3 or hearts >= 5):
+		return false
+	heals_used += 1
+	hearts = mini(5, hearts + 1)
+	inv = maxf(inv, 1.5)
+	pop_text(px, py - 40, "+1 ♥", Color("#d8433b"), 30)
+	ring(px, py, 80, Color("#d8433b"))
+	Sfx.play("bloom")
+	return true
+
+
+## «Марафон фей»: волны врагов без конца, каждые 3 волны — сердце
+func _update_marathon(dt: float) -> void:
+	if state != St.PLAY:
+		return
+	wave_t -= dt
+	if wave_t > 0:
+		return
+	wave += 1
+	wave_max = maxf(WAVE_MIN, 11.0 - wave * 0.35) * (1.0 + 0.06 * int(upgrades["clock"]))
+	wave_t = wave_max
+	var n := mini(4, 1 + (wave - 1) / 2)
+	for i in n:
+		var kind: String = HAZARD_POOL[(wave + i) % HAZARD_POOL.size()]
+		spawn_hazard(kind)
+	if wave % 3 == 0:
+		if hearts < 5:
+			hearts += 1
+			pop_text(px, py - 44, I18n.t("Волна %d! +1 ♥") % wave, Color("#d8433b"), 30)
+		else:
+			score += 250
+			pop_text(px, py - 44, I18n.t("Волна %d! +250") % wave, ch()["main"], 30)
+		ring(px, py, 90, Color("#d8433b"))
+		Sfx.play("bloom")
+	else:
+		pop_text(px, py - 40, I18n.t("Волна %d!") % wave, ch()["main"], 28)
+		Sfx.play("click", 0.8)
+	# подарки, чтобы было чем набирать очки
+	if randf() < 0.7 and count("pollen") + count("drop") + count("flake") + count("sun") < 6:
+		var pickups := ["pollen", "drop", "flake", "sun"]
+		var p := rand_pos()
+		var k: String = pickups[randi() % pickups.size()]
+		var pk := spawn(k, p.x, p.y, 10)
+		pk.a = randf() * 6
+		if k == "flake":
+			pk.vy = randf_range(45, 70)
+
+
+## «Дуэль с Королём Теней»: босс за боссом, каждый крепче прежнего
+func _update_duel(_dt: float) -> void:
+	if state != St.PLAY:
+		return
+	if count("boss") > 0:
+		return
+	if not timers.has("boss_next"):
+		timers["boss_next"] = 2.0
+	elif _t("boss_next") <= 0:
+		timers.erase("boss_next")
+		spawn_duel_boss()
+
+
+func spawn_duel_boss() -> void:
+	boss_wave += 1
+	wave = boss_wave
+	var hp := 4 + boss_wave * 2
+	var b := spawn_hazard_boss(hp)
+	pop_text(W / 2, 120, I18n.t("Король Теней — волна %d (♥%d)") % [boss_wave, hp], Color("#b58cff"), 30)
+	shake = 12.0
+	Sfx.play("boom")
+	if b == null:
+		push_warning("[game] босс не появился")
+	return
+
+
+func spawn_hazard_boss(hp: int) -> Ent:
+	var side := W * 0.2 if randf() < 0.5 else W * 0.8
+	var b := spawn("boss", side, -60, 46)
+	b.hp = hp
+	b.d = float(hp)
+	b.b = 0.6
+	return b
 
 
 ## бесконечный режим: сердца за прогресс, новые волны Короля Теней
@@ -1157,7 +1490,7 @@ func _update_endless() -> void:
 			pop_text(px, py - 40, "+1 ♥", Color("#d8433b"), 30)
 		else:
 			score += 200
-			pop_text(px, py - 40, "Волна %d! +200" % (wave + 1), ch()["main"], 26)
+			pop_text(px, py - 40, I18n.t("Волна %d! +200") % (wave + 1), ch()["main"], 26)
 		ring(px, py, 80, Color("#d8433b"))
 		Sfx.play("bloom")
 	if cid() == "star" and count("boss") == 0:
@@ -1166,8 +1499,10 @@ func _update_endless() -> void:
 		if _t("boss") <= 0:
 			timers.erase("boss")
 			var side := W * 0.2 if randf() < 0.5 else W * 0.8
-			spawn("boss", side, -60, 46).hp = 6
-			pop_text(W / 2, 120, "Король Теней вернулся!", Color("#b58cff"), 30)
+			var b := spawn("boss", side, -60, 46)
+			b.hp = 6
+			b.d = 6.0
+			pop_text(W / 2, 120, I18n.t("Король Теней вернулся!"), Color("#b58cff"), 30)
 			shake = 10.0
 			Sfx.play("boom")
 
@@ -1203,12 +1538,12 @@ func bite_sprout(e: Ent, sp: Ent) -> void:
 		return
 	sp.hp -= 1
 	burst(sp.x, sp.y, 12, Color("#6fb04e"), 180, 4, 120)
-	pop_text(sp.x, sp.y - 40, "Хрум! −листик", Color("#8a3b3b"), 22)
+	pop_text(sp.x, sp.y - 40, I18n.t("Хрум! −листик"), Color("#8a3b3b"), 22)
 	shake = maxf(shake, 6.0)
 	Sfx.play("nocharge")
 	if sp.hp <= 0:
 		sp.hp = 3
-		pop_text(sp.x, sp.y - 64, "Росток без листьев!", Color("#c8433b"), 24)
+		pop_text(sp.x, sp.y - 64, I18n.t("Росток без листьев!"), Color("#c8433b"), 24)
 		damage(true)
 
 
@@ -1218,14 +1553,15 @@ func move_nest(n: Ent) -> void:
 	n.b = 0.0 if n.b > 0 else 1.0
 	n.x = W - 70 if n.b > 0 else 70.0
 	ring(n.x, n.y, 60, ch()["accent"])
-	pop_text(n.x, n.y - 50, "Гнездо перелетело!", ch()["main"], 22)
+	pop_text(n.x, n.y - 50, I18n.t("Гнездо перелетело!"), ch()["main"], 22)
 
 
 ## true — враг сбит рывком
 func enemy_contact(e: Ent, pts: int, col: Color) -> bool:
 	if not touching(e, -2):
 		return false
-	if dash_t > 0:
+	# «Хвост кометы» продлевает сбивание врагов после рывка
+	if dash_t > 0 or (comet > 0 and int(upgrades["comet"]) > 0):
 		e.dead = true
 		add_score(pts, e.x, e.y, col)
 		burst(e.x, e.y, 22, col, 280, 1)
@@ -1243,7 +1579,8 @@ func enemy_contact(e: Ent, pts: int, col: Color) -> bool:
 
 
 func _update_boss(e: Ent, dt: float) -> void:
-	var rage := 1.0 + (6 - e.hp) * 0.12 + wave * 0.1
+	var maxhp := int(e.d) if e.d > 0.0 else 6
+	var rage := 1.0 + (maxhp - e.hp) * 0.12 + wave * 0.1
 	e.a += dt * rage
 	var tx := W / 2 + cos(e.a * 0.6) * W * 0.3
 	var ty := maxf(130, H * 0.28) + sin(e.a * 1.1) * minf(90, H * 0.12)
@@ -1254,9 +1591,9 @@ func _update_boss(e: Ent, dt: float) -> void:
 		return
 	if _t("attack") <= 0:
 		var pat := randi() % 3
-		var sp := 150.0 + (6 - e.hp) * 12
+		var sp := 150.0 + (maxhp - e.hp) * 12
 		if pat == 0:
-			var n := 10 + (6 - e.hp)
+			var n := 10 + (maxhp - e.hp)
 			var off := randf() * 6
 			for i in n:
 				var a := off + float(i) / n * TAU
@@ -1278,7 +1615,7 @@ func _update_boss(e: Ent, dt: float) -> void:
 				o.vy = sin(a) * s2
 		ring(e.x, e.y, 70, Color("#2a2040"))
 		Sfx.play("boss_shot")
-		timers["attack"] = maxf(0.9 if is_endless() else 1.2, 2.6 - (6 - e.hp) * 0.22 - wave * 0.1)
+		timers["attack"] = maxf(0.9 if (is_endless() or is_duel()) else 1.2, 2.6 - (maxhp - e.hp) * 0.22 - wave * 0.1)
 	if touching(e, -6):
 		if dash_t > 0 and carry >= 3 and e.b <= 0:
 			e.hp -= 1
@@ -1302,6 +1639,14 @@ func _update_boss(e: Ent, dt: float) -> void:
 				e.dead = true
 				for i in 4:
 					burst(e.x, e.y, 30, Color("#ffe89a") if i % 2 == 1 else Color("#b58cff"), 420, 1)
+				if is_duel():
+					score += 400 * boss_wave
+					if hearts < 5:
+						hearts += 1
+						pop_text(W / 2, 150, I18n.t("Король пал! +1 ♥ и +%d") % (400 * boss_wave), Color("#ffe89a"), 30)
+					else:
+						pop_text(W / 2, 150, I18n.t("Король пал! +%d") % (400 * boss_wave), Color("#ffe89a"), 30)
+					burst(W / 2, H / 2, 40, Color("#b58cff"), 320, 1)
 		elif dash_t <= 0:
 			if damage():
 				var d := Vector2(px - e.x, py - e.y).normalized()
@@ -1309,7 +1654,7 @@ func _update_boss(e: Ent, dt: float) -> void:
 				pvy = d.y * 500
 		elif carry < 3 and e.b <= 0:
 			e.b = 0.5
-			pop_text(e.x, e.y - 60, "Нужен заряд!", Sketch.INK, 22)
+			pop_text(e.x, e.y - 60, I18n.t("Нужен заряд!"), Sketch.INK, 22)
 			Sfx.play("nocharge")
 
 
@@ -1323,8 +1668,14 @@ func _clear_chapter() -> void:
 	var time_bonus := maxi(0, int((120.0 - ch_t) * 4.0))
 	last_bonus = 500 + hearts * 100 + time_bonus
 	score += last_bonus
-	pop_text(W / 2, H / 2 - 20, "Глава пройдена!", ch()["main"], 46)
-	pop_text(W / 2, H / 2 + 30, "Бонус +" + str(last_bonus), Sketch.INK, 28)
+	pop_text(W / 2, H / 2 - 20, I18n.t("Глава пройдена!"), ch()["main"], 46)
+	pop_text(W / 2, H / 2 + 30, I18n.t("Бонус +") + str(last_bonus), Sketch.INK, 28)
+	# «Гонка со временем»: отдельная награда за сэкономленные секунды
+	if is_race():
+		var left_bonus := maxi(0, int(round(time_left))) * 10
+		last_bonus += left_bonus
+		score += left_bonus
+		pop_text(W / 2, H / 2 + 66, I18n.t("Запас времени +") + str(left_bonus), Color("#5cc7c0"), 26)
 	for i in 5:
 		burst(randf_range(0, W), randf_range(0, H * 0.6), 20, ch()["main"] if i % 2 == 1 else ch()["accent"], 260, 4 if i % 2 == 1 else 1, 80)
 	shake = 10.0
@@ -1408,6 +1759,17 @@ func _update(dt: float) -> void:
 	ch_t += sdt
 	_update_player(sdt)
 	_update_chapter(sdt)
+	# «Гонка со временем»: секундомер тикает только в бою
+	if is_race() and state == St.PLAY:
+		time_left -= sdt
+		var sec := ceili(time_left)
+		if sec <= 5 and sec != tick_at:
+			tick_at = sec
+			Sfx.play("click", 1.5)
+		if time_left <= 0.0:
+			time_left = 0.0
+			_time_out()
+			return
 	if combo_t > 0:
 		combo_t -= sdt
 		if combo_t <= 0:
@@ -1459,6 +1821,13 @@ func _update_player(dt: float) -> void:
 		dash_t -= dt
 		add_particle(_part(px, py, 0, 0, 0.25, 14, ch()["main"], 0, 0))
 		if randf() < 0.7:
+			_trail_spark()
+		if dash_t <= 0 and int(upgrades["comet"]) > 0:
+			comet = 0.6 * int(upgrades["comet"]) # шлейф кометы ещё жжёт врагов
+	elif comet > 0:
+		comet -= dt
+		add_particle(_part(px, py, randf_range(-30, 30), randf_range(-30, 30), 0.3, 6.0, Color("#f08a2c"), 0, 0))
+		if randf() < 0.5:
 			_trail_spark()
 	else:
 		var slow := 1.0
@@ -1541,14 +1910,21 @@ func _draw_world(ci: CanvasItem) -> void:
 		var glow := (0.7 + sin(time * 10) * 0.3) if (cid() == "star" and carry >= 3) else 0.0
 		var squash := 1.15 if dash_t > 0 else 1.0
 		if cid() == "rainbow":
-			var ac: Color = Chapters.PAINTS[paint]["c"]
+			var ac: Color = paints()[paint]["c"]
 			ac.a = 0.35 + sin(time * 6) * 0.1
 			ci.draw_circle(Vector2(px, py), 24, ac)
-		FairyDraw.fairy(ci, px, py, time, ch(), facing, 1.25 * squash, glow)
+		# «Хвост кометы»: огненная дорожка за феей
+		if comet > 0:
+			ci.draw_circle(Vector2(px, py), 18 + sin(time * 20) * 3, Color(0.941, 0.541, 0.173, 0.35))
+		FairyDraw.fairy(ci, px, py, time, look_ch(), facing, 1.25 * squash, glow)
 		if shield > 0:
 			for i in 6:
 				var a := time * 3 + i / 6.0 * TAU
 				Sketch.s_ellipse(ci, px + cos(a) * 28, py + sin(a) * 28, 6, 4, 700 + i, Color("#e86a92"), 0.9)
+		if blessing > 0.0:
+			for i in 3:
+				var a := -time * 1.5 + i / 3.0 * TAU
+				Sketch.s_circle(ci, px + cos(a) * 34, py + sin(a) * 34, 4, 760 + i, Color("#f7d060"), 0.9)
 	_draw_particles(ci)
 
 
@@ -1753,7 +2129,7 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 			Sketch.scribble(ci, e.x, e.y, e.r * 0.8, e.seed, 9, Color(0.431, 0.392, 0.235, 0.4), 1.0)
 		# ---------- VII
 		"paint":
-			var c: Color = Chapters.PAINTS[int(e.a)]["c"]
+			var c: Color = paints()[int(e.a)]["c"]
 			if paint == int(e.a):
 				var gc := c
 				gc.a = 0.25
@@ -1765,9 +2141,9 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 			if int(e.a) == -1:
 				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, null, 1.3)
 				for i in 3:
-					ci.draw_arc(Vector2(e.x, e.y), e.r - 3 - i * 3, PI * 1.1 + t, PI * 1.9 + t, 12, Chapters.PAINTS[i]["c"], 2.5, true)
+					ci.draw_arc(Vector2(e.x, e.y), e.r - 3 - i * 3, PI * 1.1 + t, PI * 1.9 + t, 12, paints()[i]["c"], 2.5, true)
 			else:
-				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, Chapters.PAINTS[int(e.a)]["c"], 1.3)
+				Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, paints()[int(e.a)]["c"], 1.3)
 			ci.draw_arc(Vector2(e.x, e.y), e.r * 0.65, PI * 1.15, PI * 1.45, 6, Color(1, 1, 1, 0.85), 2.0, true)
 		"inkbub":
 			Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, Sketch.INK, 1.6)
@@ -1833,7 +2209,7 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 				Sketch.s_line(ci, x + i * 9 - 4, y - 4, x + i * 8 + 4, y + 16, e.seed + i, 0.9, Color(0.235, 0.157, 0.078, 0.5), 1)
 			Sketch.s_ellipse(ci, x, y - 6, 38, 8, e.seed + 9, Color("#d8b888"), 1.5)
 			if ch_t < 7 or e.a > 0:
-				Sketch.text(ci, x, y - 34, "Гнездо", Color("#f7e36a"), 22)
+				Sketch.text(ci, x, y - 34, I18n.t("Гнездо"), Color("#f7e36a"), 22)
 		"bolt":
 			if e.a > 0:
 				var k := 1.0 - e.a / 1.1
@@ -1902,9 +2278,9 @@ func _draw_hud(ci: CanvasItem) -> void:
 	var main: Color = ch()["main"]
 	# сердца
 	var slots := maxi(max_start_hearts(), hearts)
-	var mode_label := {"story": "", "chapter": "Одна глава", "endless": "∞ Бесконечная охота", "hard": "Одно перо ×2"}
-	if mode_label[mode] != "":
-		Sketch.text(ci, pad, H - 22, mode_label[mode], Color("#c8433b") if mode == "hard" else main, 22, -1)
+	var mode_label := Modes.hud_label(mode)
+	if mode_label != "":
+		Sketch.text(ci, pad, H - 22, mode_label, Color("#c8433b") if mode == "hard" else main, 22, -1)
 	for i in slots:
 		var full := i < hearts
 		var bob := sin(time * 10) * 2 if (full and hearts == 1) else 0.0
@@ -1915,41 +2291,70 @@ func _draw_hud(ci: CanvasItem) -> void:
 			var a := i / 5.0 * TAU + time
 			Sketch.s_ellipse(ci, sx + cos(a) * 6, pad + 16 + sin(a) * 6, 5, 3.5, 720 + i, Color("#e86a92"), 0.8)
 	# очки и серия
-	Sketch.text(ci, pad, pad + 52, "Очки: " + str(int(round(display_score))), ink, 30, -1)
+	Sketch.text(ci, pad, pad + 52, I18n.t("Очки: ") + str(int(round(display_score))), ink, 30, -1)
 	if combo >= 2:
 		var mult := mini(5, 1 + combo / 5)
-		Sketch.text(ci, pad, pad + 80, "Серия %d  ×%d" % [combo, mult], main, 22, -1)
+		Sketch.text(ci, pad, pad + 80, I18n.t("Серия %d  ×%d") % [combo, mult], main, 22, -1)
 		ci.draw_line(Vector2(pad, pad + 94), Vector2(pad + 110 * (combo_t / 2.4), pad + 94), main, 2.0, true)
-	# прогресс задания
+	# прогресс задания: у каждого режима свой смысл полосы
 	var cx := W / 2
 	var goal := int(ch()["goal"])
-	var goal_txt := ("%s: %d  ·  до ♥ %d" % [ch()["goal_label"], progress, next_heart_at - progress]) if is_endless() else ("%s: %d / %d" % [ch()["goal_label"], mini(progress, goal), goal])
+	var goal_txt := ""
+	var frac := 0.0
+	var bar_col := main
+	if is_endless():
+		goal_txt = I18n.t("%s: %d  ·  до ♥ %d") % [ch()["goal_label"], progress, next_heart_at - progress]
+		frac = 1.0 - float(next_heart_at - progress) / ENDLESS_HEART_EVERY
+	elif is_marathon():
+		goal_txt = I18n.t("Волна %d  ·  до ♥ %d") % [wave + 1, 3 - wave % 3]
+		frac = 1.0 - wave_t / maxf(0.001, wave_max)
+	elif is_duel():
+		var boss := boss_ent()
+		if boss != null:
+			var maxhp := int(maxf(1.0, boss.d))
+			goal_txt = I18n.t("Король Теней: волна %d  ·  ♥ %d / %d") % [boss_wave, maxi(0, boss.hp), maxhp]
+			frac = 1.0 - float(maxi(0, boss.hp)) / float(maxhp)
+		else:
+			goal_txt = I18n.t("Волна %d  ·  Король собирается с силами…") % (boss_wave + 1)
+	elif is_race():
+		goal_txt = "%s: %d / %d" % [ch()["goal_label"], mini(progress, goal), goal]
+		frac = time_left / maxf(0.001, time_limit)
+		bar_col = Color("#c8433b") if time_left < 10.0 else main
+	else:
+		goal_txt = "%s: %d / %d" % [ch()["goal_label"], mini(progress, goal), goal]
+		frac = float(progress) / goal
 	Sketch.text(ci, cx, pad + 14, goal_txt, Color("#f5e27a") if light else Sketch.INK, 28)
 	var bw := minf(220, W * 0.4)
 	var bx := cx - bw / 2
 	var by := pad + 34
 	Sketch.s_poly(ci, Sketch.v([bx, by, bx + bw, by, bx + bw, by + 10, bx, by + 10]), 99, true, null, 1.3, 0.6, stroke)
-	var frac := (1.0 - float(next_heart_at - progress) / ENDLESS_HEART_EVERY) if is_endless() else float(progress) / goal
 	var fill_w := (bw - 4) * clampf(frac, 0.0, 1.0)
 	if fill_w > 0:
-		Sketch.fill_poly(ci, Sketch.v([bx + 2, by + 2, bx + 2 + fill_w, by + 2, bx + 2 + fill_w, by + 8, bx + 2, by + 8]), main)
+		Sketch.fill_poly(ci, Sketch.v([bx + 2, by + 2, bx + 2 + fill_w, by + 2, bx + 2 + fill_w, by + 8, bx + 2, by + 8]), bar_col)
+	# «Гонка со временем»: секундомер в углу
+	if is_race():
+		var warn := time_left < 10.0
+		Sketch.text(ci, W - pad, pad + 14, I18n.t("%d с") % ceili(maxf(0.0, time_left)), Color("#c8433b") if warn else ink, 40, 1)
+	# «Марафон» и «Дуэль»: номер волны у правого края
+	if is_marathon() or is_duel():
+		Sketch.text(ci, W - pad, pad + 14, I18n.t("Волна %d") % maxi(1, wave), ink, 30, 1)
 	# индикатор груза
-	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3}
+	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3, "hotel": 3}
 	if carry_max.has(cid()):
 		var cm: int = carry_max[cid()]
-		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a")}[cid()]
-		var label: String = {"flower": "Пыльца", "water": "Вода", "star": "Заряд", "garden": "Солнце"}[cid()]
+		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a"), "hotel": Color("#c98a4b")}[cid()]
+		var label: String = {"flower": I18n.t("Пыльца"), "water": I18n.t("Вода"), "star": I18n.t("Заряд"), "garden": I18n.t("Солнце"), "hotel": I18n.t("Пыльца")}[cid()]
 		Sketch.text(ci, cx - cm * 16 / 2.0 - 36, by + 30, label, ink, 20)
 		for i in cm:
 			Sketch.s_circle(ci, cx - cm * 16 / 2.0 + 8 + i * 18, by + 30, 6, 200 + i, col if i < carry else null, 1.2, stroke)
 	if cid() == "night" and followers > 0:
-		Sketch.text(ci, cx, by + 30, "За тобой: %d ✦" % followers, Color("#f5e27a"), 22)
+		Sketch.text(ci, cx, by + 30, I18n.t("За тобой: %d ✦") % followers, Color("#f5e27a"), 22)
 	if cid() == "mushroom" and state == St.PLAY:
 		var warn := ring_t < ring_max * 0.3
-		Sketch.text(ci, cx, by + 30, "Хоровод: %d/5 · %d с" % [seq_next, maxi(0, ceili(ring_t))], Color("#c8433b") if warn else ink, 22)
+		Sketch.text(ci, cx, by + 30, I18n.t("Хоровод: %d/5 · %d с") % [seq_next, maxi(0, ceili(ring_t))], Color("#c8433b") if warn else ink, 22)
 	if cid() == "rainbow":
-		Sketch.text(ci, cx - 14, by + 30, "Цвет:", ink, 22)
-		Sketch.s_circle(ci, cx + 26, by + 30, 8, 250, Chapters.PAINTS[paint]["c"], 1.4, stroke)
+		Sketch.text(ci, cx - 14, by + 30, I18n.t("Цвет:"), ink, 22)
+		Sketch.s_circle(ci, cx + 26, by + 30, 8, 250, paints()[paint]["c"], 1.4, stroke)
 	# кольцо перезарядки рывка
 	if dash_cd > 0 and state == St.PLAY:
 		var c := main
@@ -1966,7 +2371,7 @@ func _draw_touch(ci: CanvasItem, _light: bool, ink: Color, stroke: Color) -> voi
 	var wing: Color = ch()["wing"]
 	wing.a = 0.75
 	Sketch.s_circle(ci, b.x, b.y, b.z * (0.92 if dash_btn_id >= 0 else 1.0), 555, wing if dash_cd <= 0 else null, 2.0, st)
-	Sketch.text(ci, b.x, b.y, "Рывок", ink, 24)
+	Sketch.text(ci, b.x, b.y, I18n.t("Рывок"), ink, 24)
 	if joy_active:
 		Sketch.s_circle(ci, joy_o.x, joy_o.y, 50, 556, null, 1.6, st)
 		var d := joy_p - joy_o
@@ -1976,4 +2381,4 @@ func _draw_touch(ci: CanvasItem, _light: bool, ink: Color, stroke: Color) -> voi
 		main.a = 0.75
 		Sketch.s_circle(ci, joy_o.x + d.x * k, joy_o.y + d.y * k, 20, 557, main, 1.6, st)
 	elif ch_t < 6:
-		Sketch.text(ci, W * 0.3, H - 90, "Веди пальцем, чтобы лететь", ink, 22)
+		Sketch.text(ci, W * 0.3, H - 90, I18n.t("Веди пальцем, чтобы лететь"), ink, 22)
