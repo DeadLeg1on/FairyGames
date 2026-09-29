@@ -24,7 +24,10 @@ func _ready() -> void:
 	_check_wiring()
 	_check_controls()
 	await _check_suspend()
-	# контрольные суммы тем: по ним видно, что сборка совпадает с эталоном (и с превью-стендом)
+	# громкость по тактам: видно, что ни один такт не выпадает и не выпирает,
+	# и что превью-стенд собирает ровно ту же музыку (сравниваем числа)
+	_check_bars()
+	# контрольные суммы тем: по ним видно, что сборка совпадает с эталоном (и стенд-превью)
 	var checks := {}
 	for n in Music.track_names():
 		if _cache.has(n):
@@ -32,6 +35,32 @@ func _ready() -> void:
 	print("MUSIC synth_ms=", _synth_ms, " async=", _async_info, " check=", checks)
 	print("FAILS ", fails)
 	get_tree().quit()
+
+
+## RMS каждого такта темы: печатаем числом и заодно проверяем ровность звучания
+func _check_bars() -> void:
+	var bars := {}
+	for name in Music.track_names():
+		var s := _samples(name)
+		var d: Dictionary = Music.themes()[name]
+		var per_bar := int(round(float(d["beats"]) * 60.0 / float(d["bpm"]) * Music.RATE))
+		var out := []
+		var lo := 9.0
+		var hi := 0.0
+		for b in int(d["bars"]):
+			var from := b * per_bar
+			var to := mini(s.size(), from + per_bar)
+			var sum := 0.0
+			for i in range(from, to):
+				sum += float(s[i]) * float(s[i])
+			var rms := sqrt(sum / float(maxi(1, to - from))) / 32767.0
+			out.append(snappedf(rms, 0.001))
+			lo = minf(lo, rms)
+			hi = maxf(hi, rms)
+		bars[name] = out
+		ok(lo > 0.03, "в каждом такте %s что-то звучит (тише всех %.3f)" % [name, lo])
+		ok(hi <= lo * 3.0, "такт %s не выпирает из общего звучания (%.3f против %.3f)" % [name, hi, lo])
+	print("MUSIC bars=", bars)
 
 
 func ok(cond: bool, what: String) -> void:
