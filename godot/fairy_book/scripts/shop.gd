@@ -22,8 +22,8 @@ const UPGRADES: Array[Dictionary] = [
 ]
 
 ## сколько пыльцы в час копит сад и сколько можно накопить
-const GARDEN_RATE := [6, 12, 20]
-const GARDEN_CAP := [40, 90, 160]
+const GARDEN_RATE: Array[int] = [6, 12, 20]
+const GARDEN_CAP: Array[int] = [40, 90, 160]
 
 
 ## список улучшений с переводом под текущий язык (карточки лавки)
@@ -136,7 +136,7 @@ static func garden_now(level: int, garden: Dictionary) -> int:
 	if last <= 0.0:
 		return int(garden.get("pending", 0))
 	var hours := maxf(0.0, (now - last) / 3600.0)
-	var cap := GARDEN_CAP[lvl]
+	var cap: int = GARDEN_CAP[lvl]
 	return clampi(int(garden.get("pending", 0)) + int(floor(hours * GARDEN_RATE[lvl])), 0, cap)
 
 
