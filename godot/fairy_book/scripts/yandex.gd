@@ -17,10 +17,18 @@ var _ad_result: Variant = null
 var _cb_ad = null
 var _cb_pause = null
 var _cb_resume = null
+var _cb_banner = null
+## липкий баннер: просили показать / платформа подтвердила показ
+var banner_wanted := false
+var banner_shown := false
+var _session_start_ms := 0
+## тег последней показанной награды (для статистики и отладки)
+var last_reward_tag := ""
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_session_start_ms = Time.get_ticks_msec()
 	web = OS.has_feature("web")
 	if not web:
 		return
@@ -31,6 +39,7 @@ func _ready() -> void:
 	_cb_ad = JavaScriptBridge.create_callback(_on_ad_done)
 	_cb_pause = JavaScriptBridge.create_callback(_on_pause)
 	_cb_resume = JavaScriptBridge.create_callback(_on_resume)
+	_cb_banner = JavaScriptBridge.create_callback(_on_banner)
 	_yb.pauseCb = _cb_pause
 	_yb.resumeCb = _cb_resume
 
@@ -90,6 +99,10 @@ func _on_ad_done(args: Array) -> void:
 	_ad_pending = false
 
 
+func _on_banner(args: Array) -> void:
+	banner_shown = args.size() > 0 and bool(args[0])
+
+
 func _begin_ad() -> void:
 	ad_showing = true
 	gameplay_stop()
@@ -99,6 +112,34 @@ func _begin_ad() -> void:
 func _end_ad() -> void:
 	ad_showing = false
 	Sfx.suspend(false)
+
+
+## Можно ли сейчас показать полноэкранную рекламу.
+## Правила Яндекса: не в первые 60 секунд сессии и не чаще раза в минуту,
+## и никогда — во время геймплея (GameplayAPI уже остановлен вызывающим).
+func interstitial_ok() -> bool:
+	if not _has_bridge() or ad_showing:
+		return false
+	var now := Time.get_ticks_msec()
+	return now - _session_start_ms > 60000 and now - _last_fullscreen_ms > 60000
+
+
+## Липкий баннер в меню: Yandex разрешает его только вне геймплея.
+func show_banner() -> void:
+	if not _has_bridge():
+		return
+	banner_wanted = true
+	if banner_shown:
+		return
+	_yb.showBanner(_cb_banner)
+
+
+func hide_banner() -> void:
+	banner_wanted = false
+	if not _has_bridge() or not banner_shown:
+		return
+	banner_shown = false
+	_yb.hideBanner()
 
 
 ## Полноэкранная реклама между сессиями. Возвращает true, если была показана.
@@ -124,8 +165,10 @@ func show_fullscreen() -> bool:
 
 
 ## Реклама с вознаграждением. true — награда засчитана.
+## tag — повод показа (continue/heal/time/chest/bless/key/garden/pollen2/...).
 ## Вне Яндекса награда выдаётся сразу (для тестирования механики).
-func show_rewarded() -> bool:
+func show_rewarded(tag: String = "") -> bool:
+	last_reward_tag = tag
 	if not _has_bridge():
 		return true
 	if ad_showing:

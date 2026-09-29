@@ -12,12 +12,14 @@ const RED := Color("#c8433b")
 const ROMAN := ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"]
 const POLLEN_COL := Color("#b08810")
 
-const MODES := [
-	{"id": "story", "icon": "✎", "title": "Сказка", "desc": "Все девять глав подряд. После каждой главы +1 ♥.", "col": "Глав"},
-	{"id": "chapter", "icon": "❧", "title": "Одна глава", "desc": "Любая открытая глава отдельно — побей свой рекорд.", "col": "Глава"},
-	{"id": "endless", "icon": "∞", "title": "Бесконечная охота", "desc": "Глава без конца: враги всё злее, каждые 10 целей +1 ♥.", "col": "Глава"},
-	{"id": "hard", "icon": "✧", "title": "Одно перо", "desc": "Сказка с одним сердцем и без лечения. Очки ×2.", "col": "Глав"},
-]
+## поводы для полноэкранной рекламы: как часто её можно показывать
+const AD_EVERY := {"chapter": 2, "restart": 1, "menu": 3}
+## перезарядки рекламных наград (секунды)
+const AD_CHEST_CD := 180.0
+const AD_BLESS_CD := 300.0
+const AD_KEY_CD := 1800.0
+## сколько времени игрок должен отсутствовать, чтобы считать это новой сессией
+const RETURN_AFTER := 600.0
 
 var game: Node2D
 var ui: Control
@@ -38,7 +40,8 @@ var scores_tab := "story"
 var rank := -1
 var player_name := "Фея"
 var unlocked := 1
-var revive_used := false
+var continues := 0
+var time_adds := 0
 var ad_busy := false
 var last_entry_date := 0
 var wobblers: Array[Control] = []
@@ -51,17 +54,39 @@ var doubled := false
 var shop_back := "menu"
 var shop_flash := ""
 var small := false
+## наряды и мета-прогресс
+var skin := "classic"
+var skins := {}
+var shop_tab := "up"
+var garden := {}
+var daily := {}
+var blessing := false
+var ad_counts := {}
+var chest_flash := ""
+var ad_hint: Label
+var return_after_break := false
+var seen_t := 0.0
 
 
 func mode_def(m: String) -> Dictionary:
-	for d in MODES:
-		if d["id"] == m:
-			return d
-	return MODES[0]
+	return Modes.def(m)
 
 
+## режим начинается с выбора главы
 func is_single() -> bool:
-	return mode == "chapter" or mode == "endless"
+	return Modes.pick(mode)
+
+
+## открыт ли режим при текущем прогрессе
+func mode_open(id: String) -> bool:
+	return unlocked >= int(mode_def(id)["unlock"])
+
+
+func _read_setting(section: String, key: String, def: Variant) -> Variant:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS) == OK:
+		return cfg.get_value(section, key, def)
+	return def
 
 
 func _ready() -> void:
@@ -72,11 +97,20 @@ func _ready() -> void:
 		unlocked = clampi(int(cfg.get_value("progress", "unlocked", 1)), 1, Chapters.count())
 	pollen = Shop.load_pollen()
 	upgrades = Shop.load_upgrades()
+	skins = Shop.load_skins()
+	skin = Shop.load_skin()
+	garden = Shop.load_garden()
+	daily = Shop.load_daily()
+	blessing = bool(_read_setting("ads", "blessed", false))
+	return_after_break = Time.get_unix_time_from_system() - Shop.last_seen() > RETURN_AFTER
+	Shop.mark_seen()
 	scores = Scores.load_all("story")
 
 	game = GameScript.new()
 	add_child(game)
 	game.upgrades = upgrades.duplicate()
+	game.skin = skin
+	game.blessing = 0.15 if blessing else 0.0
 	game.chapter_cleared.connect(_on_chapter_cleared)
 	game.game_over.connect(_on_game_over)
 
@@ -98,15 +132,30 @@ func _ready() -> void:
 	top_bar.add_child(mute_btn)
 	top_bar.add_child(pause_btn)
 
+	ad_hint = Label.new()
+	ad_hint.text = "✦ Реклама…"
+	ad_hint.add_theme_font_size_override("font_size", 26)
+	ad_hint.add_theme_color_override("font_color", Color("#b08810"))
+	ad_hint.visible = false
+	ad_hint.z_index = 8
+	ui.add_child(ad_hint)
 	Yandex.platform_pause.connect(_pause)
 	get_viewport().size_changed.connect(_on_resize)
 	game.preview(0)
 	_go("menu")
 	await get_tree().process_frame
 	Yandex.mark_ready()
+	# «реклама при возвращении»: игрок отсутствовал больше 10 минут —
+	# показываем один полноэкранный ролик в меню (платформа это разрешает)
+	if return_after_break:
+		await get_tree().create_timer(3.0).timeout
+		if screen == "menu" and not ad_busy:
+			_set_busy(true)
+			await Yandex.show_fullscreen()
+			_set_busy(false)
 
 
-func _process(_dt: float) -> void:
+func _process(dt: float) -> void:
 	var t := Time.get_ticks_msec() / 1000.0
 	for w in wobblers:
 		if is_instance_valid(w):
@@ -114,6 +163,14 @@ func _process(_dt: float) -> void:
 			w.rotation = sin(t * 2.1) * 0.026
 	var vs := ui.get_viewport_rect().size
 	top_bar.position = Vector2(vs.x - top_bar.size.x - 12, 12)
+	if ad_hint and is_instance_valid(ad_hint):
+		ad_hint.size = Vector2(vs.x, 40)
+		ad_hint.position = Vector2(0, vs.y - 44)
+	# раз в полминуты отмечаем, что игрок ещё здесь (для «награды за возвращение»)
+	seen_t += dt
+	if seen_t > 30.0:
+		seen_t = 0.0
+		Shop.mark_seen()
 
 
 func _on_resize() -> void:
@@ -135,11 +192,22 @@ func _go(s: String) -> void:
 	else:
 		Yandex.gameplay_stop()
 	pause_btn.visible = s == "play"
+	# липкий баннер живёт только вне геймплея
+	if s == "play" or s == "paused":
+		Yandex.hide_banner()
+	else:
+		Yandex.show_banner()
 	_build_overlay()
 
 
 func _set_busy(on: bool) -> void:
 	ad_busy = on
+	if ad_hint and is_instance_valid(ad_hint):
+		var vs := ui.get_viewport_rect().size
+		ad_hint.size = Vector2(vs.x, 40)
+		ad_hint.position = Vector2(0, vs.y - 44)
+		ad_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ad_hint.visible = on
 	if overlay:
 		for b in overlay.find_children("*", "Button", true, false):
 			if not b.has_meta("locked"):
@@ -151,9 +219,32 @@ func _with_ad(action: Callable) -> void:
 	if ad_busy:
 		return
 	_set_busy(true)
-	await Yandex.show_fullscreen()
+	var shown: bool = await Yandex.show_fullscreen()
 	_set_busy(false)
+	if shown:
+		Shop.add_counter("fullscreen_total")
 	action.call()
+
+
+## полноэкранная реклама по правилам повода: «каждый N-й раз» + лимиты платформы
+func _interstitial(context: String, action: Callable) -> void:
+	ad_counts[context] = int(ad_counts.get(context, 0)) + 1
+	var every := int(AD_EVERY.get(context, 1))
+	if every <= 0 or int(ad_counts[context]) % every != 0 or not Yandex.interstitial_ok():
+		action.call()
+		return
+	_with_ad(action)
+
+
+## реклама с вознаграждением: true — награда засчитана
+func _rewarded(tag: String) -> bool:
+	_set_busy(true)
+	var ok: bool = await Yandex.show_rewarded(tag)
+	_set_busy(false)
+	if ok:
+		Shop.add_counter("rewarded_" + tag)
+		Shop.add_counter("rewarded_total")
+	return ok
 
 
 func _save_setting(section: String, key: String, value: Variant) -> void:
@@ -171,7 +262,7 @@ func _unlock(n: int) -> void:
 
 
 func _record(score: int, chapter: int) -> void:
-	var entry := {"name": player_name.substr(0, 14) if player_name != "" else "Фея", "score": score, "chapter": chapter, "date": int(Time.get_unix_time_from_system() * 1000.0) * 10 + randi() % 10}
+	var entry := {"name": player_name.substr(0, 14) if player_name != "" else "Фея", "score": score, "chapter": chapter, "wave": game.wave, "date": int(Time.get_unix_time_from_system() * 1000.0) * 10 + randi() % 10}
 	var res := Scores.save(entry, mode)
 	scores = res[0]
 	scores_tab = mode
@@ -179,16 +270,25 @@ func _record(score: int, chapter: int) -> void:
 	last_pollen = Shop.pollen_for(score - granted_score, int(upgrades["bag"]))
 	granted_score = score
 	doubled = false
+	# «Ежедневный вызов» платит двойную пыльцу и ведёт серию дней
+	if mode == "daily":
+		last_pollen *= 2
+		Shop.daily_best(score)
+		daily = Shop.load_daily()
 	_add_pollen(last_pollen)
 	rank = res[1]
 	last_entry_date = int(entry["date"])
 	final_score = score
 	final_chapter = chapter
+	# благословение фей действует ровно один забег
+	if blessing:
+		_set_blessing(false)
 
 
 func _on_chapter_cleared(idx: int, bonus: int, score: int) -> void:
 	_unlock(idx + 2)
-	if mode == "chapter":
+	if _single_run():
+		# одиночные режимы заканчиваются на первой пройденной главе
 		_record(score, idx)
 		_go("result")
 		return
@@ -212,12 +312,28 @@ func _on_game_over(score: int, ch: int) -> void:
 func _choose_mode(m: String) -> void:
 	if ad_busy:
 		return
+	if not mode_open(m):
+		Sfx.play("nocharge")
+		shop_flash = "locked"
+		return
 	Sfx.play("click")
 	mode = m
-	revive_used = false
+	continues = 0
 	prev_clear = {}
 	granted_score = 0
-	if m == "story" or m == "hard":
+	if m == "duel":
+		# «Дуэль» всегда идёт на фоне звёздной главы
+		game.new_run(m)
+		game.preview(Modes.NO_BOSS_CHAPTER)
+		story_idx = Modes.NO_BOSS_CHAPTER
+		_go("story")
+	elif m == "daily":
+		# глава дня выбирается жребием от даты
+		story_idx = Modes.daily_chapter(unlocked)
+		game.new_run(m)
+		game.preview(story_idx)
+		_go("story")
+	elif Modes.story(m):
 		game.new_run(m)
 		game.preview(0)
 		story_idx = 0
@@ -226,16 +342,26 @@ func _choose_mode(m: String) -> void:
 		_go("select")
 
 
-## выбор главы (режимы «Одна глава» и «Бесконечная охота»)
+## одиночный забег (не «сказка» на много глав)
+func _single_run() -> bool:
+	return not Modes.story(mode)
+
+
+## сколько раз за забег можно «продолжить за рекламу»
+func max_continues() -> int:
+	return 2 if (mode == "endless" or mode == "marathon" or mode == "duel" or mode == "race") else 1
+
+
+## выбор главы (одиночные режимы)
 func _pick_chapter(idx: int) -> void:
-	if ad_busy or idx >= unlocked:
+	if ad_busy or idx >= unlocked or Modes.chapter_blocked(mode, idx):
 		return
 	Sfx.play("click")
 	game.new_run(mode)
 	game.preview(idx)
 	story_idx = idx
 	prev_clear = {}
-	revive_used = false
+	continues = 0
 	granted_score = 0
 	_go("story")
 
@@ -243,26 +369,36 @@ func _pick_chapter(idx: int) -> void:
 func _begin_chapter() -> void:
 	if ad_busy:
 		return
+	if mode == "daily" and Shop.daily_attempts_left() <= 0:
+		Sfx.play("nocharge")
+		return
+	if mode == "daily":
+		Shop.daily_use()
 	var run := func() -> void:
-		if is_single():
+		if is_single() or mode == "daily" or mode == "duel":
 			game.new_run(mode)
+		game.skin = skin
+		game.blessing = 0.15 if blessing else 0.0
 		game.start_chapter(story_idx)
 		rank = -1
 		_go("play")
-	# полноэкранная реклама — только в естественных паузах
-	if is_single() or story_idx > 0:
-		_with_ad(run)
-	else:
-		run.call()
+	# полноэкранная реклама — только в естественных паузах между главами
+	_interstitial("chapter", run)
 
 
 func _restart() -> void:
 	if ad_busy:
 		return
-	_with_ad(func() -> void:
+	if mode == "daily" and Shop.daily_attempts_left() <= 0:
+		# «Ещё раз» в режиме дня — только за рекламу
+		_daily_extra_attempt(true)
+		return
+	_interstitial("restart", func() -> void:
+		game.skin = skin
+		game.blessing = 0.15 if blessing else 0.0
 		game.restart()
 		rank = -1
-		revive_used = false
+		continues = 0
 		prev_clear = {}
 		granted_score = 0
 		_go("play"))
@@ -273,24 +409,84 @@ func _next_chapter() -> void:
 		_pick_chapter(story_idx + 1)
 
 
-## реклама с вознаграждением: второй шанс в текущей главе
+## реклама с вознаграждением: второй шанс в текущем забеге
 func _continue_for_ad() -> void:
-	if ad_busy or revive_used:
+	if ad_busy or continues >= max_continues():
 		return
-	_set_busy(true)
-	var ok: bool = await Yandex.show_rewarded()
-	_set_busy(false)
+	var ok: bool = await _rewarded("continue")
 	if not ok:
 		return
-	revive_used = true
+	continues += 1
 	scores = Scores.remove(last_entry_date, mode)
 	rank = -1
-	game.revive()
+	if game.is_race() and game.time_failed:
+		# в «Гонке» вместо сердца даём запас секунд
+		game.continue_race(20.0)
+		time_adds += 1
+	else:
+		game.revive()
 	_go("play")
 
 
+## +1 сердце за рекламу прямо в паузе
+func _heal_for_ad() -> void:
+	if ad_busy or game.heals_used >= 3 or game.hearts >= 5:
+		return
+	var ok: bool = await _rewarded("heal")
+	if not ok:
+		return
+	game.heal(true)
+	_resume()
+
+
+## +20 секунд за рекламу в «Гонке»
+func _time_for_ad() -> void:
+	if ad_busy or not game.is_race():
+		return
+	var ok: bool = await _rewarded("time")
+	if not ok:
+		return
+	game.time_left += 20.0
+	game.time_adds += 1
+	game.pop_text(game.px, game.py - 44, "+20 секунд!", Color("#5cc7c0"), 28)
+	Sfx.play("bloom")
+	_resume()
+
+
+## «Ежедневный вызов»: перейти к главе дня (или взять попытку за рекламу)
+func _daily_play() -> void:
+	if ad_busy:
+		return
+	if Shop.daily_attempts_left() <= 0:
+		_daily_extra_attempt(false)
+		return
+	mode = "daily"
+	story_idx = Modes.daily_chapter(unlocked)
+	game.new_run(mode)
+	game.preview(story_idx)
+	prev_clear = {}
+	granted_score = 0
+	_go("story")
+
+
+## «Ежедневный вызов»: ещё одна попытка за рекламу
+func _daily_extra_attempt(from_restart: bool = false) -> void:
+	if ad_busy or Shop.daily_used_ad_attempt():
+		return
+	var ok: bool = await _rewarded("daily")
+	if not ok:
+		return
+	Shop.daily_use(true)
+	game.new_run(mode)
+	game.preview(story_idx)
+	if from_restart:
+		_go("story")
+	else:
+		_build_overlay()
+
+
 func _pause() -> void:
-	if screen == "play":
+	if screen == "play" and not ad_busy:
 		game.pause()
 		_go("paused")
 
@@ -306,9 +502,41 @@ func _to_menu() -> void:
 	_go("menu")
 
 
+## выход в меню после забега: каждый третий раз — полноэкранная реклама
+func _to_menu_after_run() -> void:
+	_interstitial("menu", _to_menu)
+
+
 func _to_select() -> void:
 	game.preview(story_idx)
 	_go("select")
+
+
+func _open_modes() -> void:
+	if ad_busy:
+		return
+	Sfx.play("click")
+	_go("modes")
+
+
+func _open_rewards() -> void:
+	if ad_busy:
+		return
+	Sfx.play("click")
+	_go("rewards")
+
+
+## строчка о прогрессе, саде и вызове дня на главном экране
+func _progress_hint() -> String:
+	var parts := ["Открыто глав: %d из %d" % [unlocked, Chapters.count()]]
+	daily = Shop.load_daily()
+	var today := str(daily["date"]) == Modes.daily_key()
+	parts.append("★ Вызов дня %s" % ("пройден, серия %d дн." % int(daily["streak"]) if today else "ждёт"))
+	if int(upgrades["garden"]) > 0:
+		var pending := Shop.garden_now(int(upgrades["garden"]), garden)
+		if pending > 0:
+			parts.append("☀ В саду %d ✦" % pending)
+	return " · ".join(parts)
 
 
 func _open_scores(tab: String) -> void:
@@ -337,7 +565,11 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 	var s := screen
 	if code == KEY_M:
 		_toggle_mute()
-	if s == "play" and (code == KEY_ESCAPE or code == KEY_P):
+	if s == "modes" and code == KEY_ESCAPE:
+		_to_menu()
+	elif s == "rewards" and code == KEY_ESCAPE:
+		_to_menu()
+	elif s == "play" and (code == KEY_ESCAPE or code == KEY_P):
 		_pause()
 	elif s == "paused" and (code == KEY_ESCAPE or code == KEY_P or code == KEY_ENTER):
 		_resume()
@@ -352,7 +584,7 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 		_choose_mode("story")
 	elif s == "select" and code == KEY_ESCAPE:
 		_to_menu()
-	elif s == "select" and code >= KEY_1 and code <= KEY_5:
+	elif s == "select" and code >= KEY_1 and code <= KEY_9:
 		_pick_chapter(code - KEY_1)
 	elif s == "result" and (code == KEY_ENTER or code == KEY_SPACE):
 		if story_idx < Chapters.count() - 1:
@@ -367,6 +599,8 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 		_restart()
 	elif (s == "over" or s == "win") and (code == KEY_ENTER or code == KEY_SPACE):
 		_restart()
+	elif (s == "over" or s == "win" or s == "result") and code == KEY_ESCAPE:
+		_to_menu()
 
 
 # ================================================================= построение экранов
@@ -393,7 +627,7 @@ func _build_overlay() -> void:
 	match screen:
 		"menu":
 			dim.color = Color(0.937, 0.91, 0.847, 0.35)
-		"story", "scores", "select", "shop":
+		"story", "scores", "select", "shop", "modes", "rewards":
 			dim.color = Color(0.118, 0.094, 0.078, 0.25)
 		"win", "result":
 			dim.color = Color(1, 0.94, 0.78, 0.3)
@@ -417,6 +651,10 @@ func _build_overlay() -> void:
 			maxw = 520.0
 		"shop":
 			maxw = 940.0 if wide else 560.0
+		"modes":
+			maxw = 980.0 if wide else 560.0
+		"rewards":
+			maxw = 900.0 if wide else 560.0
 	var w := minf(maxw, vs.x - 24.0)
 
 	# карточка кладётся прямо в overlay (без контейнеров), чтобы её можно было
@@ -447,6 +685,10 @@ func _build_overlay() -> void:
 			_build_scores(box)
 		"shop":
 			_build_shop(box)
+		"modes":
+			_build_modes(box, inner_w)
+		"rewards":
+			_build_rewards(box, inner_w)
 	_fit_card(card)
 
 
@@ -504,6 +746,7 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	for i in Chapters.count():
 		prow.add_child(_portrait(Chapters.get_ch(i), 50))
 	left.add_child(prow)
+	left.add_child(_lbl(_progress_hint(), 20, Color(Sketch.INK, 0.75)))
 	left.add_child(_lbl("Как тебя зовут?", 22, Color(Sketch.INK, 0.8)))
 	var name_edit := LineEdit.new()
 	name_edit.text = player_name
@@ -519,14 +762,18 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
-	for d in MODES:
+	for d in Modes.LIST.slice(0, 4):
 		var b := _btn("%s %s\n%s" % [d["icon"], d["title"], d["desc"]], _choose_mode.bind(d["id"]), d["id"] == "story")
 		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.custom_minimum_size = Vector2(0, 86)
+		b.custom_minimum_size = Vector2(0, 80)
 		b.add_theme_font_size_override("font_size", 21)
 		grid.add_child(b)
 	right.add_child(grid)
+	var modes_btn := _btn("✦ Все режимы (%d) · награды за рекламу" % Modes.count(), _open_modes, true)
+	modes_btn.add_theme_font_size_override("font_size", 24)
+	modes_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	right.add_child(modes_btn)
 	var shop_btn := _btn("Лавка фей · ✦ %d" % pollen, _open_shop, true)
 	shop_btn.add_theme_font_size_override("font_size", 24)
 	shop_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -534,6 +781,162 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	right.add_child(_btn_row([_small_btn("Рекорды", _open_scores.bind("story")), _small_btn("Выход", func() -> void: get_tree().quit())] if not OS.has_feature("web") else [_small_btn("Рекорды", _open_scores.bind("story"))], 400))
 	right.add_child(_lbl("Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново", 19, Color(Sketch.INK, 0.8)))
 	right.add_child(_lbl("Касание: веди пальцем — полёт, «Рывок» или второй палец — рывок", 19, Color(Sketch.INK, 0.8)))
+
+
+## рекорд режима (для карточек режимов)
+func _best_of(m: String) -> int:
+	var list := Scores.load_all(m)
+	return int(list[0].get("score", 0)) if not list.is_empty() else 0
+
+
+## экран «Все режимы»: девять игр под одной обложкой
+func _build_modes(box: VBoxContainer, w: float) -> void:
+	box.add_child(_lbl("Режимы игры", 54, Sketch.INK, true))
+	box.add_child(_lbl("У каждого режима своя таблица рекордов. Новые открываются вместе с главами.", 20, Color(Sketch.INK, 0.75)))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	for d in Modes.LIST:
+		var id: String = d["id"]
+		var open := mode_open(id)
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var st := StyleBoxFlat.new()
+		st.bg_color = Color(1, 1, 1, 0.5) if open else Color(0.88, 0.85, 0.8, 0.4)
+		st.set_border_width_all(2)
+		st.border_color = Color(Sketch.INK, 0.45)
+		st.set_corner_radius_all(8)
+		st.set_content_margin_all(6)
+		cell.add_theme_stylebox_override("panel", st)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		v.add_child(_lbl("%s %s" % [d["icon"], d["title"]], 22, Sketch.INK if open else Color(Sketch.INK, 0.5), true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(str(d["desc"]), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+		var b := _btn("Играть", _choose_mode.bind(id), id == "story")
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.add_theme_font_size_override("font_size", 20)
+		if open:
+			var best := _best_of(id)
+			v.add_child(_lbl("рекорд: %d" % best if best > 0 else "ещё не играли", 17, POLLEN_COL, false, HORIZONTAL_ALIGNMENT_LEFT))
+		else:
+			v.add_child(_lbl("🔒 " + Modes.unlock_text(d), 17, RED, false, HORIZONTAL_ALIGNMENT_LEFT))
+			b.disabled = true
+			b.set_meta("locked", true)
+		v.add_child(b)
+		grid.add_child(cell)
+	box.add_child(grid)
+	box.add_child(_gap(4))
+	box.add_child(_btn_row([
+		_small_btn("✦ Награды за рекламу", _open_rewards),
+		_small_btn("Лавка фей · ✦ %d" % pollen, _open_shop),
+		_small_btn("← В меню", _to_menu),
+	], 560))
+
+
+## экран «Награды за рекламу»: все добровольные просмотры в одном месте
+func _build_rewards(box: VBoxContainer, w: float) -> void:
+	box.add_child(_lbl("Награды за рекламу", 52, POLLEN_COL, true))
+	box.add_child(_lbl("Короткая реклама — и подарок. Смотреть её или нет, решаешь только ты: игра проходится и без неё.", 20, Color(Sketch.INK, 0.75)))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	# сундук фей
+	var chest_left := Shop.cooldown_left("chest", AD_CHEST_CD)
+	grid.add_child(_reward_card(
+		"✿ Сундук фей",
+		"Случайная пыльца: от 40 до 130 ✦. Открывается раз в 3 минуты.",
+		chest_flash if chest_flash != "" else ("готово к открытию" if chest_left <= 0.0 else "снова через %d мин" % (int(chest_left) / 60 + 1)),
+		"▶ Открыть сундук",
+		_chest_for_ad,
+		chest_left > 0.0,
+		chest_flash != ""))
+	chest_flash = ""
+	# благословение
+	var bless_left := Shop.cooldown_left("bless", AD_BLESS_CD)
+	grid.add_child(_reward_card(
+		"❀ Благословение фей",
+		"+1 щит в начале и +15% очков на следующий забег.",
+		"✓ Активно" if blessing else ("готово" if bless_left <= 0.0 else "снова через %d мин" % (int(bless_left) / 60 + 1)),
+		"▶ Получить благословение",
+		_bless_for_ad,
+		blessing or bless_left > 0.0,
+		blessing))
+	# ключ главы
+	var key_left := Shop.cooldown_left("key", AD_KEY_CD)
+	var all_open := unlocked >= Chapters.count()
+	grid.add_child(_reward_card(
+		"❧ Ключ главы",
+		"Открывает следующую главу, не проходя предыдущую. Раз в полчаса.",
+		"все главы открыты" if all_open else ("готово: откроет главу %d" % (unlocked + 1) if key_left <= 0.0 else "снова через %d мин" % (int(key_left) / 60 + 1)),
+		"▶ Открыть главу",
+		_key_for_ad,
+		all_open or key_left > 0.0,
+		false))
+	# попытка дня
+	var daily_left := Shop.daily_attempts_left()
+	var ad_daily := Shop.daily_used_ad_attempt()
+	grid.add_child(_reward_card(
+		"★ Вторая попытка дня",
+		"«Ежедневный вызов» — ещё один забег сегодня. Очки и пыльца ×2.",
+		("попытка ещё не потрачена — играй!" if daily_left > 0 else ("использована" if ad_daily else "можно взять за рекламу")),
+		"▶ Принять вызов" if daily_left > 0 else "▶ Ещё попытка",
+		_daily_play,
+		daily_left <= 0 and ad_daily,
+		false))
+	# сад фей
+	var glvl := int(upgrades["garden"])
+	var pending := Shop.garden_now(glvl, garden)
+	grid.add_child(_reward_card(
+		"☀ Сад фей",
+		("Пока тебя нет, сад копит пыльцу. Внутри: %d ✦ (копилка до %d ✦)." % [pending, Shop.garden_cap(glvl)]) if glvl > 0 else "Купи «Сад фей» в лавке — и он начнёт копить пыльцу сам.",
+		("можно собрать %d ✦" % pending) if pending > 0 else "пусто, заходи позже",
+		"▶ Собрать ×2",
+		_claim_garden.bind(true),
+		glvl <= 0 or pending <= 0,
+		false))
+	# лечение в бою
+	grid.add_child(_reward_card(
+		"♥ Лечение в бою",
+		"+1 сердце прямо в забеге. Бывает очень кстати — доступно на паузе.",
+		"открой паузу (Esc) во время игры",
+		"Понятно",
+		func() -> void: _build_overlay(),
+		false,
+		false))
+	box.add_child(grid)
+	box.add_child(_lbl("Полноэкранная реклама показывается только между главами и забегами, никогда — во время игры.", 18, Color(Sketch.INK, 0.7)))
+	box.add_child(_gap(4))
+	box.add_child(_btn_row([_small_btn("Лавка фей", _open_shop), _small_btn("← В меню", _to_menu)], 420))
+
+
+## карточка-награда: заголовок, описание, состояние и кнопка
+func _reward_card(title: String, desc: String, state: String, btn_text: String, cb: Callable, disabled: bool, done: bool) -> Control:
+	var cell := PanelContainer.new()
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var st := StyleBoxFlat.new()
+	st.bg_color = Color(0.969, 0.816, 0.376, 0.55) if done else Color(1, 1, 1, 0.55)
+	st.set_border_width_all(2)
+	st.border_color = Color(Sketch.INK, 0.5)
+	st.set_corner_radius_all(10)
+	st.set_content_margin_all(8)
+	cell.add_theme_stylebox_override("panel", st)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	cell.add_child(v)
+	v.add_child(_lbl(title, 23, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+	v.add_child(_lbl(desc, 17, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+	v.add_child(_lbl(state, 17, POLLEN_COL, true, HORIZONTAL_ALIGNMENT_LEFT))
+	var b := _btn(btn_text, cb, not disabled)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.add_theme_font_size_override("font_size", 20)
+	if disabled:
+		b.disabled = true
+		b.set_meta("locked", true)
+	v.add_child(b)
+	return cell
 
 
 func _build_select(box: VBoxContainer, w: float) -> void:
@@ -548,7 +951,8 @@ func _build_select(box: VBoxContainer, w: float) -> void:
 	var all := Scores.load_all(mode)
 	for i in Chapters.count():
 		var c := Chapters.get_ch(i)
-		var locked := i >= unlocked
+		var blocked := Modes.chapter_blocked(mode, i)
+		var locked := i >= unlocked or blocked
 		var cell := VBoxContainer.new()
 		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		cell.add_theme_constant_override("separation", 0)
@@ -573,10 +977,21 @@ func _build_select(box: VBoxContainer, w: float) -> void:
 			if int(e.get("chapter", -1)) == i:
 				best = int(e.get("score", 0))
 				break
-		var cap := "🔒 пройди предыдущую" if locked else ("рекорд %d" % best if best >= 0 else str(c["kind"]))
+		var cap := "🔒 пройди предыдущую" if i >= unlocked else ("в этом режиме главы нет" if blocked else ("рекорд %d" % best if best >= 0 else str(c["kind"])))
+		if not locked and mode == "race":
+			cap = ("рекорд %d · ⏱ %d с" % [best, int(game.chapter_time(i))]) if best >= 0 else "⏱ %d секунд на задание" % int(game.chapter_time(i))
 		cell.add_child(_lbl(cap, 17, Color(Sketch.INK, 0.7)))
 		grid.add_child(cell)
 	box.add_child(grid)
+	# ключ главы: следующую главу можно открыть за рекламу
+	if unlocked < Chapters.count():
+		var key_left := Shop.cooldown_left("key", AD_KEY_CD)
+		var key := _small_btn("▶ Открыть главу %d за рекламу%s" % [unlocked + 1, "" if key_left <= 0.0 else " (через %d мин)" % (int(key_left) / 60 + 1)], _key_for_ad)
+		if key_left > 0.0:
+			key.disabled = true
+			key.set_meta("locked", true)
+		box.add_child(_gap(4))
+		box.add_child(key)
 	box.add_child(_gap(4))
 	box.add_child(_btn_row([_small_btn("Рекорды режима", _open_scores.bind(mode)), _small_btn("← В меню", _to_menu)], 400))
 
@@ -627,10 +1042,35 @@ func _build_story(box: VBoxContainer, w: float) -> void:
 		qb.add_child(_lbl("Задание: " + str(ch["quest"]), tsz, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
 	if mode == "hard":
 		qb.add_child(_lbl("✧ Одно перо: одно сердце на всю сказку, очки ×2.", 19, RED, false, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "race":
+		qb.add_child(_lbl("⏱ Гонка: на главу %d секунд. Успей выполнить задание — каждая сэкономленная секунда даёт 10 очков." % int(game.chapter_time(story_idx)), tsz, Color("#5cc7c0"), true, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "marathon":
+		qb.add_child(_lbl("◷ Марафон: волны врагов без конца, каждые 3 волны — сердце. От выбранной главы зависит, кто именно полетит навстречу.", tsz, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		qb.add_child(_lbl("Волну можно продлить за рекламу — сердце в паузе или продолжение после гибели.", 19, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "duel":
+		qb.add_child(_lbl("❂ Дуэль: Король Теней возвращается волна за волной. Собери 3 звёздных осколка и бей его рывком — каждый следующий босс крепче.", tsz, Color("#b58cff"), true, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "zen":
+		qb.add_child(_lbl("☀ Тихий полёт: врагов и урона нет — гуляй, собирай и слушай ветер. Пять сердец, можно не спешить.", tsz, Color("#c8842a"), true, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "daily":
+		var attempts_left := Shop.daily_attempts_left()
+		qb.add_child(_lbl("★ Вызов дня: «%s». Глава дня — %s. Очки и пыльца ×2." % [Modes.daily_rule(), str(ch["title"])], tsz, Color("#b08810"), true, HORIZONTAL_ALIGNMENT_LEFT))
+		qb.add_child(_lbl("Осталось попыток сегодня: %d. Серия: %d дн. Все игроки проходят ровно эту же главу." % [attempts_left + (1 if Shop.daily_used_ad_attempt() else 0), int(Shop.load_daily()["streak"])], 19, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
 	qb.add_child(_lbl("✎ " + str(ch["hint"]), 19, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
 	quest.add_child(qb)
 	body.add_child(quest)
-	var go_btn := _btn("Лететь! ➜", _begin_chapter, true)
+	var go_text := "Лететь! ➜"
+	if mode == "marathon":
+		go_text = "В бой! ➜"
+	elif mode == "duel":
+		go_text = "Начать дуэль ➜"
+	elif mode == "zen":
+		go_text = "Полетели! ➜"
+	elif mode == "daily":
+		go_text = "Принять вызов ➜"
+	elif mode == "race":
+		go_text = "На старт! ➜"
+	var no_attempts := mode == "daily" and Shop.daily_attempts_left() <= 0
+	var go_btn := _btn("▶ Ещё попытка за рекламу" if no_attempts else go_text, _daily_extra_attempt.bind(false) if no_attempts else _begin_chapter, true)
 	go_btn.add_theme_font_size_override("font_size", 28 if small else 34)
 	var foot: Array = [go_btn]
 	if is_single():
@@ -676,8 +1116,18 @@ func _build_story(box: VBoxContainer, w: float) -> void:
 func _build_paused(box: VBoxContainer) -> void:
 	box.add_child(_lbl("Пауза", 64, Sketch.INK, true))
 	box.add_child(_lbl("Фея присела на листок отдохнуть…", 24, Color(Sketch.INK, 0.7)))
-	box.add_child(_gap(8))
+	box.add_child(_lbl("Очки: %d  ·  ♥ %d  ·  %s" % [game.score, game.hearts, Modes.def(mode)["short"]], 20, Color(Sketch.INK, 0.75)))
+	box.add_child(_gap(6))
 	box.add_child(_btn("Продолжить", _resume, true))
+	# «добрые дела» за рекламу прямо в бою
+	if game.hearts < 5 and game.heals_used < 3:
+		box.add_child(_btn("♥ Полечиться за рекламу (+1 ♥)", _heal_for_ad))
+	if game.is_race():
+		var race_btn := _btn("⏳ +20 секунд за рекламу", _time_for_ad)
+		if game.time_adds >= 3:
+			race_btn.disabled = true
+			race_btn.set_meta("locked", true)
+		box.add_child(race_btn)
 	box.add_child(_btn("Заново (R)", _restart))
 	if is_single():
 		box.add_child(_btn("К главам", _to_select))
@@ -701,7 +1151,20 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 	elif mode == "endless":
 		title = "Охота окончена!"
 		text = "%s: %s — %d. Враги оказались сильнее… пока что." % [ch["kind"], str(ch["goal_label"]).to_lower(), final_progress]
-	elif mode == "chapter":
+	elif mode == "race" and game.time_failed:
+		title = "Время вышло!"
+		text = "%s: %d из %d. Часы быстрее феи — но её можно догнать." % [ch["goal_label"], final_progress, int(ch["goal"])]
+		col = Color("#5cc7c0")
+	elif mode == "marathon":
+		title = "Марафон окончен!"
+		text = "Продержалась волн: %d. Крылья устали, но рекорд ждёт новой попытки." % int(game.wave)
+	elif mode == "duel":
+		title = "Дуэль окончена!"
+		text = "Королей Теней побеждено: %d. Тень вернётся — и снова будет сильнее." % maxi(0, int(game.boss_wave) - 1)
+	elif mode == "daily":
+		title = "Вызов дня не покорился…"
+		text = "Сегодня всем досталась глава «%s». Попробуешь ещё раз — соперники уже ждут." % str(ch["title"])
+	elif mode == "chapter" or mode == "zen":
 		title = "Глава не удалась…"
 		text = "%s · %s. Попробуй ещё раз!" % [ch["num"], ch["title"]]
 	else:
@@ -724,15 +1187,23 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 		a.add_child(_lbl("Место в таблице: %d" % (rank + 1), 24))
 	a.add_child(_lbl("+%d ✦ пыльцы%s · всего %d" % [last_pollen * (2 if doubled else 1), " (×2)" if doubled else "", pollen], 22, POLLEN_COL))
 	b.add_child(_score_table(rank, 5 if small else 7))
-	if screen == "over" and not revive_used:
-		b.add_child(_btn("▶ %s за рекламу" % ("Продолжить охоту" if mode == "endless" else "Продолжить главу"), _continue_for_ad, true))
+	if screen == "over" and continues < max_continues():
+		if mode == "race" and game.time_failed:
+			b.add_child(_btn("▶ +20 секунд за рекламу", _continue_for_ad, true))
+		elif mode == "daily" and Shop.daily_attempts_left() <= 0 and not Shop.daily_used_ad_attempt():
+			b.add_child(_btn("▶ Ещё попытка за рекламу", _daily_extra_attempt.bind(false), true))
+		else:
+			b.add_child(_btn("▶ %s за рекламу" % ("Продолжить охоту" if (mode == "endless" or mode == "marathon" or mode == "duel") else "Продолжить главу"), _continue_for_ad, true))
+	if screen == "over" and not blessing and Shop.cooldown_left("bless", AD_BLESS_CD) <= 0.0:
+		b.add_child(_small_btn("❀ Благословение фей на новый забег за рекламу", _bless_for_ad))
 	if screen == "result" and story_idx < Chapters.count() - 1:
 		b.add_child(_btn("Следующая глава ➜", _next_chapter, true))
 	var btns: Array = [_small_btn("Ещё раз (R)", _restart)]
+	btns.append(_small_btn("✦ Награды", _open_rewards))
 	if is_single():
 		btns.append(_small_btn("Главы", _to_select))
 	btns.append(_small_btn("Лавка", _open_shop))
-	btns.append(_small_btn("В меню", _to_menu))
+	btns.append(_small_btn("В меню", _to_menu_after_run))
 	if not doubled and last_pollen > 0:
 		b.add_child(_small_btn("▶ Удвоить пыльцу за рекламу (+%d ✦)" % last_pollen, _double_pollen))
 	b.add_child(_btn_row(btns, 420))
@@ -758,7 +1229,7 @@ func _build_scores(box: VBoxContainer) -> void:
 	tabs.alignment = FlowContainer.ALIGNMENT_CENTER
 	tabs.add_theme_constant_override("h_separation", 6)
 	tabs.add_theme_constant_override("v_separation", 6)
-	for d in MODES:
+	for d in Modes.LIST:
 		var t := _small_btn("%s %s" % [d["icon"], d["title"]], _open_scores.bind(d["id"]))
 		t.add_theme_font_size_override("font_size", 19)
 		if d["id"] == scores_tab:
@@ -774,6 +1245,11 @@ func _build_scores(box: VBoxContainer) -> void:
 	box.add_child(back)
 
 
+## в одноглавевых режимах в таблице показываем номер главы, а не «3/9»
+func is_single_tab(tab: String) -> bool:
+	return Modes.pick(tab) or tab == "daily" or tab == "duel"
+
+
 func _score_table(highlight: int, max_rows: int = 10) -> Control:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 0)
@@ -782,7 +1258,7 @@ func _score_table(highlight: int, max_rows: int = 10) -> Control:
 		return v
 	var tab := scores_tab
 	var md := mode_def(tab)
-	var single := tab == "chapter" or tab == "endless"
+	var single := is_single_tab(tab)
 	v.add_child(_score_row("#", "Имя", md["col"], "Очки", false, true))
 	# показываем верх таблицы, но выделенная (новая) запись всегда видна
 	var rows := range(mini(scores.size(), max_rows))
@@ -792,6 +1268,8 @@ func _score_table(highlight: int, max_rows: int = 10) -> Control:
 		var s: Dictionary = scores[i]
 		var chn := int(s.get("chapter", 0))
 		var colv: String = str(ROMAN[clampi(chn, 0, ROMAN.size() - 1)]) if single else "%d/%d" % [chn, Chapters.count()]
+		if tab == "marathon" or tab == "duel":
+			colv = "в. %d" % int(s.get("wave", 0))
 		v.add_child(_score_row("♛" if i == 0 else str(i + 1), str(s.get("name", "Фея")), colv, str(int(s.get("score", 0))), i == highlight, false))
 	return v
 
@@ -829,9 +1307,7 @@ func _buy(id: String, via_ad: bool) -> void:
 	if price < 0:
 		return
 	if via_ad:
-		_set_busy(true)
-		var ok: bool = await Yandex.show_rewarded()
-		_set_busy(false)
+		var ok: bool = await _rewarded("upgrade")
 		if not ok:
 			return
 	else:
@@ -850,9 +1326,7 @@ func _buy(id: String, via_ad: bool) -> void:
 func _double_pollen() -> void:
 	if ad_busy or doubled or last_pollen <= 0:
 		return
-	_set_busy(true)
-	var ok: bool = await Yandex.show_rewarded()
-	_set_busy(false)
+	var ok: bool = await _rewarded("pollen2")
 	if not ok:
 		return
 	_add_pollen(last_pollen)
@@ -861,12 +1335,151 @@ func _double_pollen() -> void:
 	_build_overlay()
 
 
+## благословение фей: щит и +15% очков на следующий забег
+func _set_blessing(on: bool) -> void:
+	blessing = on
+	_save_setting("ads", "blessed", on)
+	if on:
+		game.blessing = 0.15
+	else:
+		game.blessing = 0.0
+
+
+func _bless_for_ad() -> void:
+	if ad_busy or blessing:
+		return
+	if Shop.cooldown_left("bless", AD_BLESS_CD) > 0.0:
+		Sfx.play("nocharge")
+		return
+	var ok: bool = await _rewarded("bless")
+	if not ok:
+		return
+	Shop.touch_cooldown("bless")
+	_set_blessing(true)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+## сундук фей: случайная пыльца за рекламу
+func _chest_for_ad() -> void:
+	if ad_busy:
+		return
+	if Shop.cooldown_left("chest", AD_CHEST_CD) > 0.0:
+		Sfx.play("nocharge")
+		return
+	var ok: bool = await _rewarded("chest")
+	if not ok:
+		return
+	Shop.touch_cooldown("chest")
+	var loot := 40 + randi() % 91
+	_add_pollen(loot)
+	chest_flash = "+%d ✦" % loot
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+## ключ главы: открыть следующую главу за рекламу
+func _key_for_ad() -> void:
+	if ad_busy or unlocked >= Chapters.count():
+		return
+	if Shop.cooldown_left("key", AD_KEY_CD) > 0.0:
+		Sfx.play("nocharge")
+		return
+	var ok: bool = await _rewarded("key")
+	if not ok:
+		return
+	Shop.touch_cooldown("key")
+	_unlock(unlocked + 1)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+## сад фей: собрать пыльцу (и удвоить её за рекламу)
+func _claim_garden(via_ad: bool = false) -> void:
+	var lvl := int(upgrades["garden"])
+	var pending := Shop.garden_now(lvl, garden)
+	if pending <= 0:
+		return
+	if via_ad:
+		var ok: bool = await _rewarded("garden")
+		if not ok:
+			return
+		pending *= 2
+	Shop.save_garden(Time.get_unix_time_from_system(), 0)
+	garden = Shop.load_garden()
+	_add_pollen(pending)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+## покупка наряда за пыльцу или за рекламу
+func _buy_skin(id: String, via_ad: bool) -> void:
+	if ad_busy or bool(skins.get(id, false)):
+		return
+	var price := Skins.price(id)
+	if via_ad:
+		var ok: bool = await _rewarded("skin")
+		if not ok:
+			return
+	else:
+		if pollen < price:
+			return
+		_add_pollen(-price)
+	skins[id] = true
+	Shop.save_skins(skins)
+	skin = id
+	game.skin = skin
+	Shop.save_skin(id)
+	Sfx.play("bloom")
+	_build_overlay()
+
+
+func _wear_skin(id: String) -> void:
+	if ad_busy or not bool(skins.get(id, false)):
+		return
+	skin = id
+	game.skin = skin
+	Shop.save_skin(id)
+	Sfx.play("click")
+	_build_overlay()
+
+
+func _set_shop_tab(t: String) -> void:
+	shop_tab = t
+	Sfx.play("click")
+	_build_overlay()
+
+
 func _build_shop(box: VBoxContainer) -> void:
 	box.add_child(_lbl("Лавка фей", 60, POLLEN_COL, true))
-	box.add_child(_lbl("Пыльца даётся за очки в конце каждого забега. Улучшения работают во всех режимах.", 20, Color(Sketch.INK, 0.75)))
+	box.add_child(_lbl("Пыльца даётся за очки в конце каждого забега. Всё купленное работает во всех режимах.", 20, Color(Sketch.INK, 0.75)))
 	box.add_child(_lbl("✦ %d пыльцы" % pollen, 40, POLLEN_COL, true))
+	var tabs := HBoxContainer.new()
+	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("separation", 8)
+	var pending := Shop.garden_now(int(upgrades["garden"]), garden)
+	for td in [["up", "❖ Улучшения"], ["look", "❀ Наряды"], ["garden", "☀ Сад фей" + ("" if pending <= 0 else " (%d)" % pending)]]:
+		var b := _small_btn(str(td[1]), _set_shop_tab.bind(str(td[0])))
+		if shop_tab == str(td[0]):
+			b.theme_type_variation = "PrimaryButton"
+		tabs.add_child(b)
+	box.add_child(tabs)
+	match shop_tab:
+		"look":
+			_shop_looks(box)
+		"garden":
+			_shop_garden(box)
+		_:
+			_shop_upgrades(box)
+	shop_flash = ""
+	box.add_child(_gap(4))
+	box.add_child(_btn_row([_small_btn("✦ Награды за рекламу", _open_rewards), _small_btn("← Назад", _close_shop)], 460))
+
+
+## вкладка «Улучшения»: двенадцать полезностей за пыльцу или за рекламу
+func _shop_upgrades(box: VBoxContainer) -> void:
 	var grid := GridContainer.new()
-	grid.columns = 3 if wide else 2
+	grid.columns = 4 if wide else 2
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
 	for d in Shop.UPGRADES:
@@ -912,11 +1525,85 @@ func _build_shop(box: VBoxContainer) -> void:
 			v.add_child(row)
 		grid.add_child(cell)
 	box.add_child(grid)
-	shop_flash = ""
-	box.add_child(_gap(4))
-	var back := _small_btn("← Назад", _close_shop)
-	back.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	box.add_child(back)
+
+
+## вкладка «Наряды»: косметика для феи
+func _shop_looks(box: VBoxContainer) -> void:
+	box.add_child(_lbl("Наряды меняют только внешний вид — механика остаётся прежней.", 19, Color(Sketch.INK, 0.75)))
+	var grid := GridContainer.new()
+	grid.columns = 3 if wide else 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	for d in Skins.LIST:
+		var id: String = d["id"]
+		var owned := bool(skins.get(id, false))
+		var price := int(d["price"])
+		var cell := PanelContainer.new()
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var st := StyleBoxFlat.new()
+		st.bg_color = Color(0.969, 0.816, 0.376, 0.6) if skin == id else Color(1, 1, 1, 0.55)
+		st.set_border_width_all(2)
+		st.border_color = Color(Sketch.INK, 0.5)
+		st.set_corner_radius_all(10)
+		st.set_content_margin_all(8)
+		cell.add_theme_stylebox_override("panel", st)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 2)
+		cell.add_child(v)
+		var p := _portrait(Skins.preview(id, Chapters.get_ch(0), 0.0), 58)
+		p.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		v.add_child(p)
+		v.add_child(_lbl("%s %s" % [d["icon"], d["title"]], 22, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		v.add_child(_lbl(str(d["desc"]), 17, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+		if owned:
+			if skin == id:
+				v.add_child(_lbl("✓ Надето", 20, Color("#5c9e3a"), true, HORIZONTAL_ALIGNMENT_LEFT))
+			else:
+				v.add_child(_small_btn("Надеть", _wear_skin.bind(id)))
+		else:
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 6)
+			var b1 := _small_btn("✦ %d" % price, _buy_skin.bind(id, false))
+			b1.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			if pollen < price:
+				b1.disabled = true
+				b1.set_meta("locked", true)
+			var b2 := _btn("▶ Реклама", _buy_skin.bind(id, true), true)
+			b2.add_theme_font_size_override("font_size", 20)
+			b2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(b1)
+			row.add_child(b2)
+			v.add_child(row)
+		grid.add_child(cell)
+	box.add_child(grid)
+
+
+## вкладка «Сад фей»: пассивная пыльца за ожидание
+func _shop_garden(box: VBoxContainer) -> void:
+	var lvl := int(upgrades["garden"])
+	if lvl <= 0:
+		box.add_child(_lbl("Сад фей ещё не посажен. Купи его на вкладке «Улучшения» — и он начнёт копить пыльцу, пока ты не играешь.", 22, Sketch.INK, false, HORIZONTAL_ALIGNMENT_LEFT))
+		return
+	var pending := Shop.garden_now(lvl, garden)
+	box.add_child(_lbl("Уровень сада: %d · %d ✦ в час · копилка до %d ✦" % [lvl, Shop.GARDEN_RATE[lvl - 1], Shop.garden_cap(lvl)], 22, Sketch.INK))
+	box.add_child(_lbl("В саду сейчас: %d ✦" % pending, 40, POLLEN_COL, true))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	var b1 := _btn("Собрать", _claim_garden.bind(false), true)
+	b1.add_theme_font_size_override("font_size", 24)
+	if pending <= 0:
+		b1.disabled = true
+		b1.set_meta("locked", true)
+	var b2 := _btn("▶ Собрать ×2", _claim_garden.bind(true), true)
+	b2.add_theme_font_size_override("font_size", 24)
+	if pending <= 0:
+		b2.disabled = true
+		b2.set_meta("locked", true)
+	row.add_child(b1)
+	row.add_child(b2)
+	box.add_child(row)
+	box.add_child(_lbl("Сад копит даже в выключенной игре — заглядывай почаще!", 19, Color(Sketch.INK, 0.7)))
 
 
 func _small_btn(t: String, cb: Callable) -> Button:

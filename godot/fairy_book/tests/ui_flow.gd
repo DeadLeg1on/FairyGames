@@ -1,12 +1,13 @@
 extends Node
 ## Прогон всех режимов, экранов и переходов + проверка, что карточка помещается в экран.
+## Новые экраны: «Все режимы», «Награды за рекламу», вкладки лавки, режимы дня.
 var m
 var fails := 0
 
 func _ready() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://settings.cfg"))
-	for f in ["story", "chapter", "endless", "hard"]:
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(Scores.path_for(f)))
+	for f in Modes.LIST:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(Scores.path_for(f["id"])))
 	m = preload("res://scripts/main.gd").new()
 	add_child(m)
 	await _wait(5)
@@ -51,6 +52,52 @@ func _run_flow() -> void:
 		["scores", func(): m._open_scores("endless")],
 		["scores", func(): m._open_scores("chapter")],
 		["menu", func(): m._go("menu")],
+		# --- новые экраны -------------------------------------------------
+		["modes", func(): m._open_modes()],
+		["menu", func(): m._to_menu()],
+		["rewards", func(): m._open_rewards()],
+		["rewards", func(): m.unlocked = 9; m._chest_for_ad()],
+		["menu", func(): m._to_menu()],
+		# --- гонка со временем --------------------------------------------
+		["select", func(): m.unlocked = 9; m._choose_mode("race")],
+		["story", func(): m._pick_chapter(4)], # звёздная глава — можно и в гонке
+		["play", func(): m._begin_chapter()],
+		["paused", func(): m._pause()],
+		["play", func(): m._time_for_ad()],
+		["over", func(): m._on_game_over(900, 4)],
+		["play", func(): m._continue_for_ad()],
+		["menu", func(): m._to_menu()],
+		# --- тихий полёт ---------------------------------------------------
+		["select", func(): m._choose_mode("zen")],
+		["select", func(): m._pick_chapter(4)], # в тихом полёте звёздной главы нет
+		["story", func(): m._pick_chapter(0)],
+		["play", func(): m._begin_chapter()],
+		["paused", func(): m._pause()],
+		["play", func(): m._resume()],
+		["menu", func(): m._to_menu()],
+		# --- марафон и дуэль -----------------------------------------------
+		["select", func(): m._choose_mode("marathon")],
+		["story", func(): m._pick_chapter(3)],
+		["play", func(): m._begin_chapter()],
+		["menu", func(): m._to_menu()],
+		["story", func(): m._choose_mode("duel")],
+		["play", func(): m._begin_chapter()],
+		["over", func(): m._on_game_over(500, 4)],
+		["menu", func(): m._to_menu()],
+		# --- ежедневный вызов ----------------------------------------------
+		["story", func(): m._choose_mode("daily")],
+		["play", func(): m._begin_chapter()],
+		["over", func(): m._on_game_over(700, 0)],
+		["over", func(): m._daily_extra_attempt(false)],
+		["menu", func(): m._to_menu()],
+		# --- лавка: наряды и сад --------------------------------------------
+		["shop", func(): m._open_shop()],
+		["shop", func(): m._set_shop_tab("look")],
+		["shop", func(): m._buy_skin("moon", false)],
+		["shop", func(): m._wear_skin("classic")],
+		["shop", func(): m._set_shop_tab("garden")],
+		["shop", func(): m._set_shop_tab("up")],
+		["menu", func(): m._close_shop()],
 	]
 	for st in steps:
 		st[1].call()
