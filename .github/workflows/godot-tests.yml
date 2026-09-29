@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: godot-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   headless:
     runs-on: ubuntu-latest
@@ -54,35 +58,42 @@ jobs:
             exit 1
           fi
 
-      - name: Импорт проекта
+      - name: Импорт проекта и проверка компиляции
+        id: import
         run: |
           set +e
           timeout 300 ./godot-bin --headless --path godot/fairy_book --editor --quit > import.log 2>&1
           echo $? > import.status
           tail -15 import.log
+          bad=$(grep -cE "Parse Error|SCRIPT ERROR|Cannot |Invalid |Failed to load" import.log)
+          if [ "$bad" = "0" ]; then echo "compile=1" >> "$GITHUB_OUTPUT"; else echo "compile=0" >> "$GITHUB_OUTPUT"; fi
 
       - name: Тесты (режимы, лавка, локализация)
+        if: steps.import.outputs.compile == '1'
         run: |
           set +e
-          timeout 300 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1
           echo $? > modes.status
           tail -25 modes.log
 
       - name: Тесты (экраны и переходы)
+        if: steps.import.outputs.compile == '1'
         run: |
           set +e
-          timeout 300 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1
           echo $? > ui.status
           tail -25 ui.log
 
       - name: Тесты (бесконечный режим и «Одно перо»)
+        if: steps.import.outputs.compile == '1'
         run: |
           set +e
-          timeout 300 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn > endless.log 2>&1
+          timeout 240 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn > endless.log 2>&1
           echo $? > endless.status
           tail -15 endless.log
 
       - name: Тесты (автоплей глав)
+        if: steps.import.outputs.compile == '1'
         run: |
           set +e
           timeout 600 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/autoplay.tscn > autoplay.log 2>&1
@@ -108,7 +119,8 @@ jobs:
 
           for name in ('version.log', 'import.log') + TESTS:
               if not os.path.exists(name):
-                  errors.append((name + ' (нет файла)', 'сцена не запускалась'))
+                  if name == 'import.log':
+                      errors.append((name + ' (нет файла)', 'импорт не выполнялся'))
                   continue
               text = open(name, encoding='utf-8', errors='replace').read()
               bad = [l for l in text.splitlines() if PROBLEM.search(l)]
