@@ -1,0 +1,231 @@
+extends Node
+## Проверка процедурной музыки (scripts/music.gd): три темы — меню, главы и отель.
+## Сцена собирает их в настоящем движке и проверяет петлю, громкость, переключение
+## и то, что пауза/реклама глушат музыку вместе со звуками.
+##
+##   godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/music_check.tscn
+
+const INSTRUMENTS := ["harp", "bell", "flute", "bass", "pad", "glass"]
+
+var fails := 0
+## сэмплы и статистика по темам: считаем один раз, чтобы тест не тормозил
+var _cache := {}
+
+
+func _ready() -> void:
+	_check_themes()
+	_check_build()
+	_check_loop()
+	_check_wiring()
+	_check_controls()
+	await _check_suspend()
+	print("FAILS ", fails)
+	get_tree().quit()
+
+
+func ok(cond: bool, what: String) -> void:
+	if not cond:
+		fails += 1
+	print(("OK   " if cond else "FAIL ") + what)
+
+
+## сэмплы темы как массив знаковых значений (один раз на тему)
+func _samples(name: String) -> PackedInt32Array:
+	if _cache.has(name):
+		return _cache[name]["samples"]
+	var stream := Music.build(name)
+	var data := stream.data
+	var out := PackedInt32Array()
+	out.resize(int(data.size() / 2))
+	var peak := 0
+	var sum := 0.0
+	for i in out.size():
+		var v := data.decode_s16(i * 2)
+		out[i] = v
+		peak = maxi(peak, absi(v))
+		sum += float(v) * float(v)
+	var rms := sqrt(sum / float(maxi(1, out.size()))) / 32767.0
+	_cache[name] = {"samples": out, "peak": float(peak) / 32767.0, "rms": rms, "check": _checksum(out)}
+	return out
+
+
+func _peak(name: String) -> float:
+	_samples(name)
+	return float(_cache[name]["peak"])
+
+
+func _rms(name: String) -> float:
+	_samples(name)
+	return float(_cache[name]["rms"])
+
+
+## грубая, но своя подпись содержимого: чтобы отличить темы друг от друга
+func _checksum(s: PackedInt32Array) -> int:
+	var acc := s.size()
+	var step := maxi(1, int(s.size() / 4096))
+	var i := 0
+	while i < s.size():
+		acc = (acc * 31 + s[i]) % 1000000007
+		i += step
+	return acc
+
+
+## RMS отрезка (считается по кэшу, без повторного декодирования)
+func _rms_range(name: String, from: int, to: int) -> float:
+	var s := _samples(name)
+	var sum := 0.0
+	var n := maxi(1, to - from)
+	for i in range(maxi(0, from), mini(to, s.size())):
+		var v := float(s[i]) / 32767.0
+		sum += v * v
+	return sqrt(sum / float(n))
+
+
+# ------------------------------------------------------------------ данные тем
+
+func _check_themes() -> void:
+	var names := Music.track_names()
+	ok(names.size() == 3 and names.has("menu") and names.has("story") and names.has("hotel"),
+		"три темы: меню, главы и отель (%s)" % ", ".join(names))
+	var defs := Music.themes()
+	var seen_titles := []
+	var meters := []
+	for n in names:
+		ok(defs.has(n), "у темы %s есть описание" % n)
+		var d: Dictionary = defs[n]
+		var sec := Music.length_of(n)
+		ok(sec >= 10.0 and sec <= 40.0, "тема %s звучит %.1f с — длина для петли" % [n, sec])
+		ok(str(d["title"]) != "" and not seen_titles.has(str(d["title"])), "у темы %s своё название: %s" % [n, str(d["title"])])
+		seen_titles.append(str(d["title"]))
+		meters.append(int(d["beats"]))
+		var melody: Array = d["melody"]
+		var inside := true
+		for m in melody:
+			if float(m[1]) >= Music.length_of(n) / (60.0 / float(d["bpm"])) or float(m[2]) <= 0.0:
+				inside = false
+		ok(melody.size() >= 16 and inside, "мелодия %s целиком укладывается в петлю (%d нот)" % [n, melody.size()])
+		var chords: Array = d["chords"]
+		ok(chords.size() == int(d["bars"]), "аккорды %s идут по такту (%d)" % [n, chords.size()])
+	ok(meters[0] == 4 and meters[1] == 4 and meters[2] == 3, "вальс отеля — на три четверти, остальные на четыре")
+	ok(float(defs["story"]["bpm"]) > float(defs["menu"]["bpm"]), "тема глав бодрее меню (%d против %d bpm)" % [int(defs["story"]["bpm"]), int(defs["menu"]["bpm"])])
+
+
+# ------------------------------------------------------------------ синтез
+
+func _check_build() -> void:
+	var slowest := 0
+	for n in Music.track_names():
+		var t0 := Time.get_ticks_msec()
+		var stream := Music.build(n)
+		var ms := Time.get_ticks_msec() - t0
+		slowest = maxi(slowest, ms)
+		ok(stream != null, "тема %s собирается в поток" % n)
+		if stream == null:
+			continue
+		print("     %s: %.1f с, синтез %d мс, пик %.2f, RMS %.3f" % [n, Music.length_of(n), ms, _peak(n), _rms(n)])
+		ok(stream.format == AudioStreamWAV.FORMAT_16_BITS and not stream.stereo and stream.mix_rate == Music.RATE,
+			"тема %s — моно 16 бит на %d Гц" % [n, Music.RATE])
+		ok(absi(stream.data.size() - (int(Music.length_of(n) * Music.RATE) + 1) * 2) <= 2,
+			"длина данных темы %s совпадает с длиной петли" % n)
+		var peak := _peak(n)
+		ok(peak > 0.4 and peak <= 0.99, "тема %s звучит и не клиппует (пик %.2f)" % [n, peak])
+		ok(_rms(n) > 0.02, "тема %s не тишина (RMS %.3f)" % [n, _rms(n)])
+	ok(slowest < 20000, "самая долгая сборка темы — %d мс" % slowest)
+	# темы не дублируют друг друга
+	var sigs := {}
+	for n in Music.track_names():
+		_samples(n)
+		sigs[n] = str(_cache[n]["check"])
+	ok(sigs["menu"] != sigs["story"] and sigs["story"] != sigs["hotel"] and sigs["menu"] != sigs["hotel"],
+		"все три темы разные")
+	# повторный запрос берёт готовый поток, а не синтезирует заново
+	var again := Music.build("menu")
+	ok(again == Music.build("menu"), "собранная тема кэшируется")
+
+
+func _check_loop() -> void:
+	for n in Music.track_names():
+		var st := Music.build(n)
+		ok(st.loop_mode == AudioStreamWAV.LOOP_FORWARD and st.loop_begin == 0 and st.loop_end == st.data.size() / 2,
+			"тема %s зациклена целиком (0..%d)" % [n, st.loop_end])
+		# шов петли: «хвосты» нот довёрнуты в начало, поэтому громкость на стыке ровная
+		var head := _rms_range(n, 0, int(Music.RATE * 0.05))
+		var tail := _rms_range(n, int(Music.length_of(n) * Music.RATE) - int(Music.RATE * 0.05), int(Music.length_of(n) * Music.RATE))
+		ok(absf(head - tail) < 0.15, "на стыке петли %s нет провала или щелчка (%.3f против %.3f)" % [n, head, tail])
+		var first := _samples(n)[0]
+		var last := _samples(n)[int(Music.length_of(n) * Music.RATE) - 1]
+		ok(absi(first - last) < 12000, "скачок на стыке %s остаётся в пределах волны" % n)
+
+
+# ------------------------------------------------------------------ выбор темы
+
+func _check_wiring() -> void:
+	ok(Music.want_for("menu", "story") == "menu", "меню играет тему меню")
+	ok(Music.want_for("lang", "story") == "menu", "экран выбора языка — тоже меню")
+	ok(Music.want_for("select", "story") == "menu", "выбор главы — меню")
+	ok(Music.want_for("play", "story") == "story", "главы играют тему глав")
+	ok(Music.want_for("play", "endless") == "story", "в бесконечной охоте — тема глав")
+	ok(Music.want_for("play", "idle") == "hotel", "в отеле своя тема")
+	ok(Music.want_for("hotel", "idle") == "hotel", "экран отеля держит тему отеля")
+	ok(Music.want_for("scores", "idle") == "hotel", "рекорды отеля не переключают музыку на меню")
+	ok(Music.want_for("shop", "story") == "menu", "лавка из меню — тема меню")
+
+
+func _check_controls() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(Music.SETTINGS)
+	var was_on: Variant = cfg.get_value("audio", "music_on", null)
+	var was_vol: Variant = cfg.get_value("audio", "music", null)
+
+	Music.play("story")
+	ok(Music.track == "story", "тема глав включается")
+	var stream_before := Music._player.stream
+	Music.play("story")
+	ok(Music._player.stream == stream_before, "повторный вызов ту же тему не перезапускает")
+	Music.play("hotel")
+	ok(Music.track == "hotel" and Music._player.stream == Music.build("hotel"), "тема отеля включается вместо прежней")
+	Music.stop()
+	ok(Music.track == "", "музыку можно остановить")
+
+	Music.set_volume(2.0)
+	ok(is_equal_approx(Music.volume, 1.0), "громкость ограничена единицей")
+	Music.set_volume(0.5)
+	var read_back := ConfigFile.new()
+	read_back.load(Music.SETTINGS)
+	ok(is_equal_approx(float(read_back.get_value("audio", "music", 0.0)), 0.5), "громкость музыки сохраняется в настройках")
+	Music.toggle()
+	ok(not Music.enabled, "кнопка музыки выключает её")
+	var read_off := ConfigFile.new()
+	read_off.load(Music.SETTINGS)
+	ok(not bool(read_off.get_value("audio", "music_on", true)), "выключенная музыка помнится между запусками")
+	Music.toggle()
+	ok(Music.enabled, "и включается обратно")
+
+	# вернуть настройки как были, чтобы тест не менял настройки игрока
+	var back := ConfigFile.new()
+	back.load(Music.SETTINGS)
+	if was_on == null:
+		back.erase_section_key("audio", "music_on")
+	else:
+		back.set_value("audio", "music_on", was_on)
+	if was_vol == null:
+		back.erase_section_key("audio", "music")
+	else:
+		back.set_value("audio", "music", was_vol)
+	back.save(Music.SETTINGS)
+
+
+## пауза платформы и реклама глушат музыку через тот же вызов, что и звуки
+func _check_suspend() -> void:
+	Music.play("menu")
+	Sfx.suspend(true)
+	ok(Music.suspended, "пауза платформы глушит музыку")
+	var silent := Music._player.volume_db
+	Sfx.suspend(false)
+	ok(not Music.suspended, "после паузы музыка возвращается")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	ok(Music._player.volume_db > silent, "громкость музыки восстанавливается (%.1f → %.1f дБ)" % [silent, Music._player.volume_db])
+	Music.set_enabled(true)
+	for n in Music.track_names():
+		ok(Music.build(n) != null and _peak(n) > 0.4, "тема %s на месте после всех проверок" % n)

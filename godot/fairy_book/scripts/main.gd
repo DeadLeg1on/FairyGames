@@ -214,6 +214,7 @@ func _notification(what: int) -> void:
 
 func _go(s: String) -> void:
 	screen = s
+	_sync_music()
 	if s == "play":
 		Yandex.gameplay_start()
 	else:
@@ -225,6 +226,23 @@ func _go(s: String) -> void:
 	else:
 		Yandex.show_banner()
 	_build_overlay()
+
+
+## музыка: меню, главы и отель — три темы, каждая в своём настроении
+func _sync_music() -> void:
+	Music.play(Music.want_for(screen, mode))
+
+
+func _toggle_music() -> void:
+	Music.toggle()
+	if Music.enabled and Music.track == "":
+		_sync_music()
+	Sfx.play("click")
+	_build_overlay()
+
+
+func _music_label() -> String:
+	return I18n.t("♪ Музыка: включена") if Music.enabled else I18n.t("♪ Музыка: выключена")
 
 
 func _set_busy(on: bool) -> void:
@@ -617,8 +635,10 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 		return
 	var code := k.physical_keycode
 	var s := screen
-	if code == KEY_M:
+	if code == KEY_M and k.shift_pressed:
 		_toggle_mute()
+	elif code == KEY_M:
+		_toggle_music()
 	if s == "lang" and code == KEY_2:
 		_pick_lang(I18n.EN)
 	elif s == "lang" and (code == KEY_1 or code == KEY_ENTER or code == KEY_SPACE):
@@ -892,11 +912,12 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	shop_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(shop_btn)
 	var foot: Array = [_small_btn(I18n.t("Язык: %s") % I18n.title_of(I18n.EN if I18n.lang == I18n.RU else I18n.RU), _toggle_lang)]
+	foot.append(_small_btn(_music_label(), _toggle_music))
 	foot.append(_small_btn(I18n.t("Рекорды"), _open_scores.bind("story")))
 	if not OS.has_feature("web"):
 		foot.append(_small_btn(I18n.t("Выход"), func() -> void: get_tree().quit()))
 	right.add_child(_btn_row(foot, 460))
-	right.add_child(_lbl(I18n.t("Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново"), 19, Color(Sketch.INK, 0.8)))
+	right.add_child(_lbl(I18n.t("Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново, M — музыка, Shift+M — звуки"), 19, Color(Sketch.INK, 0.8)))
 	right.add_child(_lbl(I18n.t("Касание: веди пальцем — полёт, «Рывок» или второй палец — рывок"), 19, Color(Sketch.INK, 0.8)))
 
 

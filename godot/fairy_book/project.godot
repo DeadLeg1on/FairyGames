@@ -24,6 +24,7 @@ config/icon="res://icon.svg"
 
 [autoload]
 
+Music="*res://scripts/music.gd"
 Sfx="*res://scripts/sfx.gd"
 Yandex="*res://scripts/yandex.gd"
 

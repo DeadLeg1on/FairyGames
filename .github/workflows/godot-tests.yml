@@ -84,6 +84,14 @@ jobs:
           echo $? > ui.status
           tail -25 ui.log
 
+      - name: Тесты (музыка — меню, главы, отель)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 240 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/music_check.tscn > music.log 2>&1
+          echo $? > music.status
+          tail -40 music.log
+
       - name: Тесты (отель фей — idle-глава)
         if: steps.import.outputs.compile == '1'
         run: |
@@ -121,8 +129,8 @@ jobs:
 
           PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory|не найдено)')
           # только эти сцены печатают итоговую строку FAILS
-          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log')
-          TESTS = ('modes.log', 'ui.log', 'hotel.log', 'endless.log', 'autoplay.log')
+          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log', 'music.log')
+          TESTS = ('modes.log', 'ui.log', 'music.log', 'hotel.log', 'endless.log', 'autoplay.log')
           errors, fails, ok_count = [], [], {}
 
           for name in ('version.log', 'import.log') + TESTS:
@@ -166,7 +174,7 @@ jobs:
               sys.exit(1)
           print('::notice title=Godot-тесты пройдены::OK-проверок: %s' % ', '.join('%s=%d' % (k, v) for k, v in ok_count.items()))
           # хвосты сцен без строки FAILS — чтобы результат был виден в аннотации
-          for name in ('hotel.log', 'endless.log', 'autoplay.log'):
+          for name in ('music.log', 'hotel.log', 'endless.log', 'autoplay.log'):
               if os.path.exists(name):
                   tail = '\n'.join(open(name, encoding='utf-8', errors='replace').read().splitlines()[-12:])
                   print('::notice title=%s::%s' % (name, esc(tail[:4000])))

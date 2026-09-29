@@ -625,4 +625,10 @@ const TEXT := {
 	"не открыто: купи на вкладке «Спа»": "locked: buy it on the Spa tab",
 	" · куплено": " · owned",
 	"%s · %d с · +%d ✦ · мест %d": "%s · %d s · +%d ✦ · slots %d",
+	"♪ Музыка: включена": "♪ Music: on",
+	"♪ Музыка: выключена": "♪ Music: off",
+	"Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново, M — музыка, Shift+M — звуки": "Keyboard: arrows / WASD to fly, Space / Shift to dash, Esc to pause, R to restart, M for music, Shift+M for sound",
+	"Пыльца на страницах": "Pollen on the Pages",
+	"Полёт над лугом": "Flight over the Meadow",
+	"Самовар и звёзды": "Samovar and Stars",
 }

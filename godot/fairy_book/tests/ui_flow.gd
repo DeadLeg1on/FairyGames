@@ -58,6 +58,8 @@ func _run_flow() -> void:
 		# --- новые экраны -------------------------------------------------
 		["modes", func(): m._open_modes()],
 		["menu", func(): m._to_menu()],
+		["menu", func(): m._toggle_music()],   # музыка выключается из меню
+		["menu", func(): m._toggle_music()],   # и включается обратно
 		["rewards", func(): m._open_rewards()],
 		["rewards", func(): m.unlocked = 9; m._chest_for_ad()],
 		["menu", func(): m._to_menu()],
