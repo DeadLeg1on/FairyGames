@@ -212,8 +212,11 @@ godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.
 godot --headless --path godot/fairy_book --quit-after 3000 res://tests/endless_check.tscn  # бесконечный режим и «Одно перо»
 godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/hotel_check.tscn  # idle-глава «Отель фей»: заселение, отзывы, покупки, офлайн
 godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/music_check.tscn  # музыка: три темы, петля, громкость, пауза/реклама
+godot --headless --path godot/fairy_book res://tests/music_export.tscn            # послушать темы: сохраняет три wav в godot/fairy_book/music_export/
 ```
 `ui_flow` проходит все экраны на трёх размерах окна и в обоих языках (в том числе экран выбора языка,
 лавку по-английски и все вкладки отеля), `modes_check` и `hotel_check` дополнительно проверяют,
 что переведены все строки данных, а `hotel_check` — что отель считает деньги и офлайн-смену так, как задумано.
 Тесты печатают `OK`/`FAIL` по каждому шагу и итоговое число `FAILS 0`.
+`music_export` — не тест, а «плеер»: он собирает три темы и кладёт рядом с проектом `menu.wav`, `story.wav` и `hotel.wav`,
+чтобы мелодии можно было оценить на слух (в CI такие файлы уходят отдельным артефактом `music-wav`).
