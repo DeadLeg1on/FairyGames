@@ -12,6 +12,8 @@ var fails := 0
 var _cache := {}
 ## сколько миллисекунд занял синтез каждой темы
 var _synth_ms := {}
+## сколько кадров заняла пошаговая сборка и самый долгий из них
+var _async_info := {}
 
 
 func _ready() -> void:
@@ -22,7 +24,7 @@ func _ready() -> void:
 	_check_wiring()
 	_check_controls()
 	await _check_suspend()
-	print("MUSIC ", " ".join(_cache.keys()), " synth_ms=", _synth_ms)
+	print("MUSIC synth_ms=", _synth_ms, " async=", _async_info)
 	print("FAILS ", fails)
 	get_tree().quit()
 
@@ -195,6 +197,7 @@ func _check_async() -> void:
 		frames += 1
 	ok(Music.is_built("hotel"), "пошаговая сборка доходит до конца (%d кадров)" % frames)
 	ok(frames >= 2, "сборка разложена на несколько кадров, а не одним куском")
+	_async_info = {"frames": frames, "worst": worst}
 	print("     сборка по кадрам: %d кадров, самый долгий кадр %d мс" % [frames, worst])
 	var samples := _samples("hotel")
 	ok(samples.size() > 0, "собранная по кадрам тема звучит так же, как синхронная (%d сэмплов)" % samples.size())
