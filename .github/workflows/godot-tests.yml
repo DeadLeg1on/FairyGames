@@ -89,7 +89,8 @@ jobs:
           echo $? > autoplay.status
           tail -15 autoplay.log
 
-      # диагностика уходит в аннотации check-run: их видно через API
+      # Диагностика уходит в аннотации check-run: их можно прочитать через API
+      # даже там, где сам архив логов недоступен.
       - name: Диагностика через аннотации
         if: always()
         run: |
@@ -99,7 +100,9 @@ jobs:
           def esc(text):
               return text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
 
-          PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory)')
+          PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory|не найдено)')
+          # только эти сцены печатают итоговую строку FAILS
+          FAILS_TESTS = ('modes.log', 'ui.log')
           TESTS = ('modes.log', 'ui.log', 'endless.log', 'autoplay.log')
           errors, fails, ok_count = [], [], {}
 
@@ -109,22 +112,30 @@ jobs:
                   continue
               text = open(name, encoding='utf-8', errors='replace').read()
               bad = [l for l in text.splitlines() if PROBLEM.search(l)]
+              status = name.replace('.log', '.status')
+              code = open(status).read().strip() if os.path.exists(status) else '0'
+
               if bad:
-                  errors.append((name, '\n'.join(bad[-40:])))
+                  errors.append((name, '\n'.join(bad[-60:])))
               if name in TESTS:
                   ok_count[name] = len(re.findall(r'^OK ', text, re.M))
+              if name in FAILS_TESTS:
                   m = re.findall(r'FAILS (\d+)', text)
                   if not m:
-                      errors.append((name + ' (нет строки FAILS)', '\n'.join(text.splitlines()[-25:])))
+                      errors.append((name + ' (нет строки FAILS)', '\n'.join(text.splitlines()[-30:])))
                   elif m[-1] != '0':
-                      fails.append('%s: FAILS %s, OK %s' % (name, m[-1], ok_count[name]))
-              status = name.replace('.log', '.status')
-              if os.path.exists(status):
-                  code = open(status).read().strip()
-                  if code not in ('0', ''):
-                      errors.append((status, 'код выхода ' + code + '\n' + '\n'.join(text.splitlines()[-15:])))
+                      fails.append('%s: FAILS %s, OK %s' % (name, m[-1], ok_count.get(name, 0)))
+              if code not in ('0', ''):
+                  errors.append((status, 'код выхода %s\n%s' % (code, '\n'.join(text.splitlines()[-20:]))))
 
-          for name, body in errors[:9]:
+          # полные логи тестов, где есть провалы — чтобы причина была видна целиком
+          for name in TESTS:
+              if os.path.exists(name) and (name in [f.split(':')[0] for f in fails] or name in [e[0] for e in errors]):
+                  text = open(name, encoding='utf-8', errors='replace').read()
+                  if len(text) < 60000:
+                      print('::error title=%s (полный лог)::%s' % (name, esc(text)))
+
+          for name, body in errors[:8]:
               print('::error title=%s::%s' % (name, esc(body[:60000])))
           if fails:
               print('::error title=Провалы тестов::%s' % esc('; '.join(fails)))

@@ -5,7 +5,9 @@ extends Node
 
 var fails := 0
 const HAZARD_KINDS := ["wasp", "moth", "spider", "spore", "flame", "spark", "icicle", "orb", "inkbub", "bug", "beetle", "bolt", "boss"]
-const PICKUPS := ["pollen", "drop", "flake", "crystal", "shard", "sun", "firefly"]
+## врагов берём из движка (game.HAZARDS), иначе цели главы — бутоны, гнёзда —
+## попадали в подсчёт и «Тихий полёт» ложно падал на пяти бутонах
+
 
 
 func _ready() -> void:
@@ -38,7 +40,7 @@ func _step(g, frames: int) -> void:
 func _hazards(g) -> int:
 	var n := 0
 	for e in g.ents:
-		if not PICKUPS.has(e.kind) and not e.dead:
+		if g.HAZARDS.has(e.kind) and not e.dead:
 			n += 1
 	return n
 

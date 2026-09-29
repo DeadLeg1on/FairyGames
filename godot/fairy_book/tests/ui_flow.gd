@@ -88,7 +88,9 @@ func _run_flow() -> void:
 		["over", func(): m._on_game_over(500, 4)],
 		["menu", func(): m._to_menu()],
 		# --- ежедневный вызов ----------------------------------------------
-		["story", func(): m._choose_mode("daily")],
+		# вызов дня одноразовый: сбрасываем состояние, иначе повторные проходы
+		# (на других размерах окна) остаются на экране главы
+		["story", func(): Shop.save_daily({"date": "", "attempts": 0, "streak": 0, "best": 0}); m._choose_mode("daily")],
 		["play", func(): m._begin_chapter()],
 		["over", func(): m._on_game_over(700, 0)],
 		["over", func(): m._daily_extra_attempt(false)],
