@@ -616,4 +616,13 @@ const TEXT := {
 	"Свободных мест: %d · кликни по фее": "Free beds: %d · click a fairy",
 	"Процедуры": "Treatments",
 	"не открыто": "locked",
+	"★ %.1f · гостей %d · касса %d ✦": "★ %.1f · guests %d · till %d ✦",
+	"Мест %d/%d · вытяжка %d ✦/мин · сезон дня: %s (×1.6)": "Beds %d/%d · extractor %d ✦/min · season: %s (×1.6)",
+	"Кто прилетел · прилетают: %s": "Who is here · arriving: %s",
+	"№%d · %s · уют %d/%d · мест %d/%d%s": "No. %d · %s · comfort %d/%d · beds %d/%d%s",
+	"⌗ Второе место: %d ✦": "⌗ Second bed: %d ✦",
+	"%s · %d с · +%d ✦": "%s · %d s · +%d ✦",
+	"не открыто: купи на вкладке «Спа»": "locked: buy it on the Spa tab",
+	" · куплено": " · owned",
+	"%s · %d с · +%d ✦ · мест %d": "%s · %d s · +%d ✦ · slots %d",
 }

@@ -177,14 +177,17 @@ func _dump_card(card: Control) -> void:
 	if card.get_child_count() == 0:
 		return
 	var box: Control = card.get_child(0)
+	var kids := []
 	for c in box.get_children():
 		var cc := c as Control
-		if cc == null:
-			continue
+		if cc != null:
+			kids.append(cc)
+	kids.sort_custom(func(a, b) -> bool: return a.get_minimum_size().y > b.get_minimum_size().y)
+	for cc in kids.slice(0, 8):
 		var text := ""
 		if cc is Label:
-			text = (cc as Label).text.substr(0, 40)
-		print("       ", cc.get_class(), " size=", cc.size, " min=", cc.get_minimum_size(), " ", text)
+			text = (cc as Label).text.substr(0, 46)
+		print("       ", cc.get_class(), " min=", cc.get_minimum_size(), " size=", cc.size, " ", text)
 
 
 func _wait(n: int) -> void:

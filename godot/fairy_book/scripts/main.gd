@@ -2407,33 +2407,33 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 		hotel_state = Hotel.load_state()
 		st = hotel_state
 	var beds := Hotel.beds(st)
-	box.add_child(_lbl("♨ " + I18n.t("Отель фей"), 46 if small else 52, Color("#c98a4b"), true))
-	# рейтинг, касса и гостья звезда
+	box.add_child(_lbl("♨ " + I18n.t("Отель фей"), 44 if small else 50, Color("#c98a4b"), true))
+	# рейтинг, касса и сбор — одной строкой, чтобы сцена занимала больше места
 	var stars := Hotel.stars(st)
-	var star_lbl := _lbl("", 22, Color("#b08810"), true)
-	star_lbl.text = I18n.t("Рейтинг ★ %.1f · отзывов %d · гостей %d") % [stars, (st["reviews"] as Array).size(), int(st["served"])]
-	box.add_child(star_lbl)
-	var cash_lbl := _hotel_live_label(_lbl("", 24, POLLEN_COL, true), func() -> String:
-		var txt := I18n.t("Касса: %d ✦ · мест %d/%d · вытяжка %d ✦/мин") % [int(hotel_state["cash"]), int(Hotel.beds(hotel_state)[0]), int(Hotel.beds(hotel_state)[1]), Hotel.flow_per_min(hotel_state)]
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	head.alignment = BoxContainer.ALIGNMENT_CENTER
+	var stat := _lbl("", 21, Color("#b08810"), true, HORIZONTAL_ALIGNMENT_LEFT, false)
+	stat.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	stat.text = I18n.t("★ %.1f · гостей %d · касса %d ✦") % [stars, int(st["served"]), int(st["cash"])]
+	head.add_child(stat)
+	head.add_child(_small_btn(I18n.t("Собрать"), _hotel_collect.bind(false)))
+	head.add_child(_small_btn(I18n.t("▶ ×2"), _hotel_collect.bind(true)))
+	box.add_child(head)
+	var cash_lbl := _hotel_live_label(_lbl("", 18, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT), func() -> String:
+		var txt := I18n.t("Мест %d/%d · вытяжка %d ✦/мин · сезон дня: %s (×1.6)") % [int(Hotel.beds(hotel_state)[0]), int(Hotel.beds(hotel_state)[1]),
+			Hotel.flow_per_min(hotel_state), Hotel.theme_title(Hotel.season_theme())]
 		if Hotel.boost_left(hotel_state) > 0.0:
 			txt += I18n.t(" · ×2 ещё %s") % Hotel.fmt_time(Hotel.boost_left(hotel_state))
 		return txt)
 	box.add_child(cash_lbl)
-	var take := _btn_row([
-		_btn(I18n.t("Собрать"), _hotel_collect.bind(false), true),
-		_small_btn(I18n.t("▶ Собрать ×2"), _hotel_collect.bind(true)),
-	], 420)
-	box.add_child(take)
-	var season := Hotel.theme_title(Hotel.season_theme())
-	box.add_child(_lbl(I18n.t("Сезон дня: %s · за такой номер платят ×1.6") % season, 18, Color(Sketch.INK, 0.75)))
-	box.add_child(_lbl(I18n.t("Сейчас прилетают: %s") % _hotel_open_kinds(), 17, Color(Sketch.INK, 0.68)))
 	if hotel_flash != "":
 		box.add_child(_lbl("✦ " + hotel_flash, 20, PINK, true))
 	elif hotel_welcome != "":
 		box.add_child(_lbl(hotel_welcome, 20, POLLEN_COL, true))
 	# сцена отеля: феи, номера и станции — выбираем курсором
 	var view: Control = HotelViewScript.new()
-	view.custom_minimum_size = Vector2(0, clampf(w * 0.46, 300.0, 430.0))
+	view.custom_minimum_size = Vector2(0, clampf(w * 0.34, 250.0, 330.0))
 	view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	view.state = hotel_state
 	view.sel = hotel_sel
@@ -2483,48 +2483,53 @@ func _hotel_open_kinds() -> String:
 	return ", ".join(out)
 
 
-## вкладка «Гости»: очередь на ресепшене
+## компактный заголовок карточки списка: название и цена/состояние
+func _hotel_grid(columns: int) -> GridContainer:
+	var grid := GridContainer.new()
+	grid.columns = columns
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	return grid
+
+
+func _hotel_card_btn(text: String, tip: String, cb: Callable, locked: bool = false, done: bool = false) -> Button:
+	var b := _btn(text, cb, not locked and not done)
+	b.add_theme_font_size_override("font_size", 17)
+	if tip != "":
+		b.tooltip_text = tip
+	if done:
+		b.text = "✓ " + b.text
+		b.disabled = true
+		b.set_meta("locked", true)
+	elif locked:
+		b.disabled = true
+		b.set_meta("locked", true)
+	return b
+
+
+## вкладка «Гости»: очередь на ресепшене одной строкой на гостью
 func _hotel_guests(box: VBoxContainer, _w: float) -> void:
 	var queue: Array = hotel_state["queue"]
+	box.add_child(_lbl(I18n.t("Кто прилетел · прилетают: %s") % _hotel_open_kinds(), 17, Color(Sketch.INK, 0.68)))
 	if queue.is_empty():
-		box.add_child(_lbl(I18n.t("На ресепшене пусто. Следующая гостья прилетит через %d с.") % int(maxf(1.0, float(hotel_state["next_guest"]))), 22, Color(Sketch.INK, 0.8)))
-	else:
-		box.add_child(_lbl(I18n.t("Кто прилетел: подбери фее номер того же вида."), 19, Color(Sketch.INK, 0.75)))
+		box.add_child(_lbl(I18n.t("На ресепшене пусто. Следующая гостья прилетит через %d с.") % int(maxf(1.0, float(hotel_state["next_guest"]))), 20, Color(Sketch.INK, 0.8)))
 	for i in queue.size():
 		var guest: Dictionary = queue[i]
 		var k := Hotel.kind_of(str(guest["kind"]))
-		var card := PanelContainer.new()
-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var stb := StyleBoxFlat.new()
-		stb.bg_color = Color(1, 1, 1, 0.5)
-		stb.set_border_width_all(2)
-		stb.border_color = Color(Sketch.INK, 0.35)
-		stb.set_corner_radius_all(8)
-		stb.set_content_margin_all(6)
-		card.add_theme_stylebox_override("panel", stb)
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		card.add_child(v)
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		var name_lbl := _lbl("", 21, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT)
-		# в HBox переносимой надписи нужен EXPAND_FILL, иначе её сжимает до одного слова
-		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var row := HFlowContainer.new()
+		row.alignment = FlowContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("h_separation", 6)
+		row.add_theme_constant_override("v_separation", 4)
 		var idx := i
-		name_lbl.text = "%s %s · %s%s" % [str(k["icon"]), str(k["title"]), I18n.t(str(k["kind"])), I18n.t(" · ★ гостья за рекламу") if bool(guest.get("vip", false)) else ""]
-		row.add_child(name_lbl)
-		var wait := _hotel_live_label(_lbl("", 19, Color("#b08810"), false, HORIZONTAL_ALIGNMENT_LEFT, false), func() -> String:
-			return I18n.t("ждёт %s") % Hotel.fmt_time(float((hotel_state["queue"] as Array)[idx]["patience"])))
-		wait.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(wait)
-		v.add_child(row)
-		v.add_child(_lbl(I18n.t(str(k["whim"])), 18, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t("ждёт номер: %s · процедура: %s") % [Hotel.theme_title(str(k["theme"])), Hotel.proc_title(str(k["proc"]))], 18, Color(Sketch.INK, 0.7), false, HORIZONTAL_ALIGNMENT_LEFT))
-		var pick := _btn(I18n.t("Подобрать номер ➜"), _hotel_select.bind(i), true)
-		pick.add_theme_font_size_override("font_size", 20)
-		pick.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		v.add_child(pick)
-		box.add_child(card)
+		var line := _hotel_live_label(_lbl("", 19, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT, false), func() -> String:
+			var q: Dictionary = (hotel_state["queue"] as Array)[idx]
+			return "%s %s · %s · %s · %s" % [str(k["icon"]), str(k["title"]),
+				I18n.t("ждёт %s") % Hotel.fmt_time(float(q["patience"])),
+				I18n.t(str(k["whim"])), I18n.t(" · ★") if bool(q.get("vip", false)) else ""])
+		line.tooltip_text = I18n.t("ждёт номер: %s · процедура: %s") % [Hotel.theme_title(str(k["theme"])), Hotel.proc_title(str(k["proc"]))]
+		row.add_child(line)
+		row.add_child(_small_btn(I18n.t("Подобрать номер ➜"), _hotel_select.bind(idx)))
+		box.add_child(row)
 	box.add_child(_gap(2))
 	var star_left := Shop.cooldown_left("hotel_star", AD_STAR_CD)
 	box.add_child(_btn_row([
@@ -2533,204 +2538,100 @@ func _hotel_guests(box: VBoxContainer, _w: float) -> void:
 	], 520))
 
 
-## вкладка «Номера»: заселение, уют, окружение, расширение
-func _hotel_rooms(box: VBoxContainer, _w: float) -> void:
+## вкладка «Номера»: одна строка на номер — уют, места и вид окружения
+func _hotel_rooms(box: VBoxContainer, w: float) -> void:
 	var rooms: Array = hotel_state["rooms"]
-	if hotel_sel_i >= 0 and hotel_sel_i < (hotel_state["queue"] as Array).size():
-		var guest: Dictionary = (hotel_state["queue"] as Array)[hotel_sel_i]
-		var k := Hotel.kind_of(str(guest["kind"]))
-		box.add_child(_lbl(I18n.t("Заселяем %s: её окружение — %s") % [str(k["title"]), Hotel.theme_title(str(k["theme"]))], 20, PINK, true))
-	else:
-		box.add_child(_lbl(I18n.t("На сцене кликни по фее, а потом по кровати или станции. Здесь — уют, места и виды окружения."), 18, Color(Sketch.INK, 0.75)))
-	var season := Hotel.season_theme()
+	box.add_child(_lbl(I18n.t("На сцене кликни по фее, а потом по кровати или станции. Здесь — уют, места и виды окружения."), 18, Color(Sketch.INK, 0.75)))
 	for ri in rooms.size():
-		_hotel_room_card(box, ri, rooms[ri], season)
-	var add_cost := Hotel.open_room_price(hotel_state)
-	box.add_child(_gap(2))
-	if add_cost < 0:
-		box.add_child(_lbl(I18n.t("Все %d номеров открыты — дальше только уют и новые окружения.") % rooms.size(), 19, Color(Sketch.INK, 0.75)))
-	else:
-		box.add_child(_btn(I18n.t("+ Новый номер — %d ✦") % add_cost, _hotel_new_room, true))
+		var room: Dictionary = rooms[ri]
+		var theme_id := str(room["theme"])
+		var lvl := int(room["lvl"])
+		var slots := int(room["slots"])
+		var guests: Array = room["guests"]
+		var season_txt := I18n.t(" · сезон ×1.6") if theme_id == Hotel.season_theme() else ""
+		var row := HFlowContainer.new()
+		row.alignment = FlowContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("h_separation", 6)
+		row.add_theme_constant_override("v_separation", 4)
+		var info := _lbl(I18n.t("№%d · %s · уют %d/%d · мест %d/%d%s") % [ri + 1, Hotel.theme_title(theme_id), lvl,
+			Hotel.ROOM_LEVEL_MAX, guests.size(), slots, season_txt], 19, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT, false)
+		row.add_child(info)
+		var up_cost := Hotel.upgrade_price(ri, lvl)
+		if up_cost >= 0:
+			row.add_child(_small_btn(I18n.t("✿ Уют: %d ✦") % up_cost, _hotel_upgrade_room.bind(ri)))
+		row.add_child(_small_btn(I18n.t("❀ Сменить вид"), _hotel_open_theme.bind(ri)))
+		if slots < 2:
+			row.add_child(_small_btn(I18n.t("⌗ Второе место: %d ✦") % Hotel.expand_price(ri), _hotel_expand_room.bind(ri)))
+		box.add_child(row)
 	if hotel_theme_for >= 0:
 		_hotel_theme_list(box, hotel_theme_for)
 	elif hotel_proc_for >= 0:
 		_hotel_proc_list(box, hotel_proc_for, hotel_proc_slot)
-
-
-## карточка номера
-func _hotel_room_card(box: VBoxContainer, ri: int, room: Dictionary, season: String) -> void:
-	var theme_id := str(room["theme"])
-	var lvl := int(room["lvl"])
-	var slots := int(room["slots"])
-	var guests: Array = room["guests"]
-	var card := PanelContainer.new()
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var stb := StyleBoxFlat.new()
-	stb.bg_color = Color(1, 1, 1, 0.55)
-	stb.set_border_width_all(2)
-	stb.border_color = Color(Sketch.INK, 0.45)
-	stb.set_corner_radius_all(8)
-	stb.set_content_margin_all(6)
-	card.add_theme_stylebox_override("panel", stb)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 2)
-	card.add_child(v)
-	var season_txt := I18n.t(" · сезон ×1.6") if theme_id == season else ""
-	v.add_child(_lbl(I18n.t("Номер %d · %s · уют %d · мест %d/%d%s") % [ri + 1, Hotel.theme_title(theme_id), lvl, guests.size(), slots, season_txt], 21, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
-	for si in guests.size():
-		var g: Dictionary = guests[si]
-		var k := Hotel.kind_of(str(g["kind"]))
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		var gidx := si
-		var info := _hotel_live_label(_lbl("", 19, Color(Sketch.INK, 0.85), false, HORIZONTAL_ALIGNMENT_LEFT), func() -> String:
-			var gg: Dictionary = (hotel_state["rooms"] as Array)[ri]["guests"][gidx]
-			var proc := ""
-			if str(gg["proc"]) != "":
-				proc = I18n.t(" · %s %s") % [Hotel.proc_title(str(gg["proc"])), I18n.t("готово") if float(gg["proc_left"]) <= 0.0 else Hotel.fmt_time(float(gg["proc_left"]))]
-			return "%s %s · %s %s%s%s" % [str(Hotel.kind_of(str(gg["kind"]))["icon"]), Hotel.kind_title(str(gg["kind"])), I18n.t("выезд"), Hotel.fmt_time(float(gg["t_left"])), proc, "" if bool(gg.get("matched", false)) else I18n.t(" · не её вкус")])
-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(info)
-		if str(g["proc"]) == "":
-			row.add_child(_small_btn(I18n.t("▶ Процедура"), _hotel_open_procs.bind(ri, si)))
-		v.add_child(row)
-	var acts := HFlowContainer.new()
-	acts.alignment = FlowContainer.ALIGNMENT_CENTER
-	acts.add_theme_constant_override("h_separation", 6)
-	acts.add_theme_constant_override("v_separation", 4)
-	var free := Hotel.free_beds(room)
-	var hint := ""
-	if free > 0:
-		var qi := _hotel_guest_for_room(room)
-		var who := I18n.t("Заселить: нет гостей")
-		if qi >= 0:
-			var queue: Array = hotel_state["queue"]
-			var kind := str((queue[qi] as Dictionary)["kind"])
-			who = I18n.t("Заселить: %s") % Hotel.kind_title(kind)
-			hint = Hotel.fit_hint(kind, theme_id)
-		var b := _btn(who, _hotel_check_in.bind(ri), qi >= 0)
-		b.add_theme_font_size_override("font_size", 19)
-		if qi < 0:
-			b.disabled = true
-			b.set_meta("locked", true)
-		acts.add_child(b)
-	var up_cost := Hotel.upgrade_price(ri, lvl)
-	if up_cost >= 0:
-		acts.add_child(_small_btn(I18n.t("✿ Уют: %d ✦") % up_cost, _hotel_upgrade_room.bind(ri)))
 	else:
-		acts.add_child(_lbl(I18n.t("✓ уют максимальный"), 17, Color(Sketch.INK, 0.6), false, HORIZONTAL_ALIGNMENT_CENTER, false))
-	acts.add_child(_small_btn(I18n.t("❀ Сменить вид"), _hotel_open_theme.bind(ri)))
-	if slots < 2:
-		acts.add_child(_small_btn(I18n.t("⌗ Расширить: %d ✦") % Hotel.expand_price(ri), _hotel_expand_room.bind(ri)))
-	else:
-		acts.add_child(_lbl(I18n.t("✓ два места"), 17, Color(Sketch.INK, 0.6), false, HORIZONTAL_ALIGNMENT_CENTER, false))
-	v.add_child(acts)
-	if hint != "":
-		v.add_child(_lbl(hint, 17, Color(Sketch.INK, 0.7), false, HORIZONTAL_ALIGNMENT_LEFT))
-	box.add_child(card)
+		var add_cost := Hotel.open_room_price(hotel_state)
+		if add_cost < 0:
+			box.add_child(_lbl(I18n.t("Все %d номеров открыты — дальше только уют и новые окружения.") % rooms.size(), 19, Color(Sketch.INK, 0.75)))
+		else:
+			box.add_child(_btn(I18n.t("+ Новый номер — %d ✦") % add_cost, _hotel_new_room, true))
 
 
-## список видов окружения: покупка и примерка
+## список видов окружения: компактные кнопки, описание — в подсказке
 func _hotel_theme_list(box: VBoxContainer, room_i: int) -> void:
-	box.add_child(_lbl(I18n.t("Окружение для номера %d") % (room_i + 1), 22, WINE, true))
-	var grid := GridContainer.new()
-	grid.columns = 3 if wide else 2
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var title := _lbl(I18n.t("Окружение для номера %d") % (room_i + 1), 21, WINE, true, HORIZONTAL_ALIGNMENT_LEFT, false)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(title)
+	row.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_theme.bind(room_i)))
+	box.add_child(row)
+	var grid := _hotel_grid(4 if wide else 2)
 	for d in Hotel.themes():
 		var id := str(d["id"])
 		var owned := Hotel.theme_owned(hotel_state, id)
-		var cell := PanelContainer.new()
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var stb := StyleBoxFlat.new()
-		stb.bg_color = Color(1, 1, 1, 0.5) if owned else Color(0.9, 0.87, 0.82, 0.45)
-		stb.set_border_width_all(2)
-		stb.border_color = Color(Sketch.INK, 0.4)
-		stb.set_corner_radius_all(8)
-		stb.set_content_margin_all(6)
-		cell.add_theme_stylebox_override("panel", stb)
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		cell.add_child(v)
-		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
-		var btn := _btn(I18n.t("Надеть") if owned else I18n.t("Купить %d ✦") % int(d["price"]), _hotel_apply_theme.bind(room_i, id), owned)
-		btn.add_theme_font_size_override("font_size", 19)
-		v.add_child(btn)
-		grid.add_child(cell)
+		var price := Hotel.theme_price(hotel_state, id)
+		var text := "%s %s" % [str(d["icon"]), str(d["title"])]
+		if not owned:
+			text += I18n.t(" · %d ✦") % price
+		grid.add_child(_hotel_card_btn(text, I18n.t(str(d["desc"])), _hotel_apply_theme.bind(room_i, id), false, owned and str((hotel_state["rooms"] as Array)[room_i]["theme"]) == id))
 	box.add_child(grid)
-	box.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_theme.bind(room_i)))
 
 
-## список процедур для конкретной гостьи
+## список процедур для конкретной гостьи: тоже компактно
 func _hotel_proc_list(box: VBoxContainer, room_i: int, slot: int) -> void:
-	box.add_child(_lbl(I18n.t("Куда отправить гостью из номера %d") % (room_i + 1), 22, WINE, true))
-	var grid := GridContainer.new()
-	grid.columns = 3 if wide else 2
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var title := _lbl(I18n.t("Куда отправить гостью из номера %d") % (room_i + 1), 21, WINE, true, HORIZONTAL_ALIGNMENT_LEFT, false)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(title)
+	row.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_procs.bind(room_i, slot)))
+	box.add_child(row)
+	var grid := _hotel_grid(3)
 	for d in Hotel.procs():
 		var id := str(d["id"])
 		var owned := Hotel.proc_owned(hotel_state, id)
 		var left := Hotel.proc_room_left(hotel_state, id)
-		var cell := PanelContainer.new()
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var stb := StyleBoxFlat.new()
-		stb.bg_color = Color(1, 1, 1, 0.5) if owned and left > 0 else Color(0.9, 0.87, 0.82, 0.45)
-		stb.set_border_width_all(2)
-		stb.border_color = Color(Sketch.INK, 0.4)
-		stb.set_corner_radius_all(8)
-		stb.set_content_margin_all(6)
-		cell.add_theme_stylebox_override("panel", stb)
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		cell.add_child(v)
-		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t("%d с · +%d ✦ · мест %d/%d") % [int(Hotel.proc_dur(hotel_state, id)), int(d["pay"]), left, int(d["cap"])], 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
-		var btn := _btn(I18n.t("Отправить"), _hotel_send_proc.bind(room_i, slot, id), true)
-		btn.add_theme_font_size_override("font_size", 19)
-		if not owned or left <= 0:
-			btn.disabled = true
-			btn.set_meta("locked", true)
-		v.add_child(btn)
-		grid.add_child(cell)
+		var text := "%s %s · %d/%d" % [str(d["icon"]), str(d["title"]), int(d["cap"]) - left, int(d["cap"])]
+		var tip := I18n.t("%s · %d с · +%d ✦") % [I18n.t(str(d["desc"])), int(Hotel.proc_dur(hotel_state, id)), int(d["pay"])]
+		if not owned:
+			tip = I18n.t("не открыто: купи на вкладке «Спа»")
+		grid.add_child(_hotel_card_btn(text, tip, _hotel_send_proc.bind(room_i, slot, id), not owned or left <= 0))
 	box.add_child(grid)
-	box.add_child(_small_btn(I18n.t("← Закрыть список"), _hotel_open_procs.bind(room_i, slot)))
 
 
 ## вкладка «Спа»: покупка процедур и ускорения
 func _hotel_spa(box: VBoxContainer, _w: float) -> void:
-	box.add_child(_lbl(I18n.t("Процедуры отеля: гости платят за них отдельно, а любимую процедуру вспоминают в отзыве."), 19, Color(Sketch.INK, 0.8)))
-	var grid := GridContainer.new()
-	grid.columns = 3 if wide else 2
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
+	box.add_child(_lbl(I18n.t("Процедуры отеля: гости платят за них отдельно, а любимую процедуру вспоминают в отзыве."), 18, Color(Sketch.INK, 0.8)))
+	var grid := _hotel_grid(3 if wide else 2)
 	for d in Hotel.procs():
 		var id := str(d["id"])
 		var owned := Hotel.proc_owned(hotel_state, id)
-		var cell := PanelContainer.new()
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var stb := StyleBoxFlat.new()
-		stb.bg_color = Color(1, 1, 1, 0.5) if owned else Color(0.9, 0.87, 0.82, 0.45)
-		stb.set_border_width_all(2)
-		stb.border_color = Color(Sketch.INK, 0.4)
-		stb.set_corner_radius_all(8)
-		stb.set_content_margin_all(6)
-		cell.add_theme_stylebox_override("panel", stb)
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		cell.add_child(v)
-		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t("%d с · +%d ✦ · мест %d") % [int(Hotel.proc_dur(hotel_state, id)), int(d["pay"]), int(d["cap"])], 17, POLLEN_COL, false, HORIZONTAL_ALIGNMENT_LEFT))
-		var btn := _btn(I18n.t("Купить %d ✦") % int(d["price"]), _hotel_buy_proc.bind(id), true)
-		btn.add_theme_font_size_override("font_size", 19)
+		var text := "%s %s" % [str(d["icon"]), str(d["title"])]
 		if owned:
-			btn.text = "✓ " + I18n.t("куплено")
-			btn.disabled = true
-			btn.set_meta("locked", true)
-		v.add_child(btn)
-		grid.add_child(cell)
+			text += I18n.t(" · куплено")
+		else:
+			text += I18n.t(" · %d ✦") % int(d["price"])
+		grid.add_child(_hotel_card_btn(text, I18n.t("%s · %d с · +%d ✦ · мест %d") % [I18n.t(str(d["desc"])), int(Hotel.proc_dur(hotel_state, id)), int(d["pay"]), int(d["cap"])],
+			_hotel_buy_proc.bind(id), false, owned))
 	box.add_child(grid)
 	box.add_child(_gap(2))
 	box.add_child(_btn_row([
@@ -2741,45 +2642,22 @@ func _hotel_spa(box: VBoxContainer, _w: float) -> void:
 
 ## вкладка «Отель»: улучшения, рекорды и итоги смены
 func _hotel_ups(box: VBoxContainer, _w: float) -> void:
-	var grid := GridContainer.new()
-	grid.columns = 3 if wide else 2
-	grid.add_theme_constant_override("h_separation", 8)
-	grid.add_theme_constant_override("v_separation", 8)
+	var grid := _hotel_grid(3 if wide else 2)
 	for d in Hotel.upgrades():
 		var id := str(d["id"])
 		var lvl := Hotel.up_level(hotel_state, id)
-		var mx := int(d["max"])
 		var price := Hotel.up_price(hotel_state, id)
-		var cell := PanelContainer.new()
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var stb := StyleBoxFlat.new()
-		stb.bg_color = Color(1, 1, 1, 0.5)
-		stb.set_border_width_all(2)
-		stb.border_color = Color(Sketch.INK, 0.4)
-		stb.set_corner_radius_all(8)
-		stb.set_content_margin_all(6)
-		cell.add_theme_stylebox_override("panel", stb)
-		var v := VBoxContainer.new()
-		v.add_theme_constant_override("separation", 2)
-		cell.add_child(v)
 		var pips := ""
-		for i in mx:
+		for i in int(d["max"]):
 			pips += "◆" if i < lvl else "◇"
-		v.add_child(_lbl("%s %s" % [str(d["icon"]), str(d["title"])], 20, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(I18n.t(str(d["desc"])), 17, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
-		v.add_child(_lbl(pips, 18, POLLEN_COL))
-		var btn := _btn(I18n.t("Улучшить: %d ✦") % price, _hotel_buy_up.bind(id), true)
-		btn.add_theme_font_size_override("font_size", 19)
-		if price < 0:
-			btn.text = "✓ " + I18n.t("Максимум")
-			btn.disabled = true
-			btn.set_meta("locked", true)
-		v.add_child(btn)
-		grid.add_child(cell)
+		var text := "%s %s %s" % [str(d["icon"]), str(d["title"]), pips]
+		if price >= 0:
+			text += I18n.t(" · %d ✦") % price
+		grid.add_child(_hotel_card_btn(text, I18n.t(str(d["desc"])), _hotel_buy_up.bind(id), false, price < 0))
 	box.add_child(grid)
-	box.add_child(_gap(2))
 	box.add_child(_lbl(I18n.t("Итоги смены уходят в таблицу рекордов режима «Отель фей»: %d ✦ и %d гостей.") % [int(hotel_state["earned"]), int(hotel_state["served"])], 19, Color(Sketch.INK, 0.75)))
 	box.add_child(_btn_row([
 		_btn(I18n.t("◷ Записать итоги смены"), _hotel_report, true),
 		_small_btn(I18n.t("★ Рекорды отеля"), _open_scores.bind("idle")),
 	], 460))
+
