@@ -29,7 +29,7 @@ var track := ""
 
 const BUDGET_USEC := 6000
 ## сколько сэмплов обрабатываем за одну порцию при нормализации и кодировании
-const CHUNK := 24000
+const CHUNK := 48000
 
 var _streams := {}
 var _builts := {}
@@ -322,9 +322,6 @@ static func _voice(note: float, at: float, dur: float, amp: float, kind: String,
 	var k := exp(-decay / RATE)  # множитель затухания за один шаг
 	var env := 0.0
 	var peak := amp
-	var hold := 0.0
-	# у мягкой подушки волну считаем через сэмпл: разницы не слышно, а сборка вдвое легче
-	var stride := 2 if kind == "pad" else 1
 	for i in count:
 		var t := float(i) / RATE
 		if t < attack:
@@ -333,20 +330,18 @@ static func _voice(note: float, at: float, dur: float, amp: float, kind: String,
 			if i == int(attack * RATE):
 				env = peak
 			env *= k
-		if i % stride == 0:
-			phase += step * float(stride)
-			var s := _wave(table, phase)
-			s += harm * _wave(table, phase * 2.02 + 0.13)
-			if third > 0.0:
-				s += third * _wave(_sine, phase * 3.01)
-			# очень мягкое «покачивание» для пада и флейты — живое дыхание
-			if kind == "pad" or kind == "flute":
-				s *= 1.0 + 0.12 * _wave(_sine, 4.5 * t + pan)
-			hold = s
+		phase += step
+		var s := _wave(table, phase)
+		s += harm * _wave(table, phase * 2.02 + 0.13)
+		if third > 0.0:
+			s += third * _wave(_sine, phase * 3.01)
+		# очень мягкое «покачивание» для пада и флейты — живое дыхание
+		if kind == "pad" or kind == "flute":
+			s *= 1.0 + 0.12 * _wave(_sine, 4.5 * t + pan)
 		var idx := start + i
 		if idx >= n:
 			idx -= n
-		_buf[idx] += hold * env * (1.0 - 0.18 * pan)
+		_buf[idx] += s * env * (1.0 - 0.18 * pan)
 
 
 ## щётка: короткий шум с высокочастотным уклоном
@@ -396,38 +391,7 @@ func _start_job(name: String) -> void:
 	_buf.resize(int(length_of(name) * RATE) + 1)
 	_buf.fill(0.0)
 	_bytes = PackedByteArray()
-	_job = {"name": name, "state": "notes", "i": 0, "notes": _notes_of(name), "cursor": 0, "peak": 0.0, "gain": 1.0}
-
-
-## все звуки темы по отдельности: бюджет сборки считается по одной ноте
-static func _notes_of(name: String) -> Array:
-	var d: Dictionary = themes()[name]
-	var bars := int(d["bars"])
-	var beats := int(d["beats"])
-	var beat_s := 60.0 / float(d["bpm"])
-	var chords: Array = d["chords"]
-	var bass: Array = d["bass"]
-	var pattern: Array = d["arp_pattern"]
-	var octave := int(d["arp_octave"])
-	var out := []
-	for bar in bars:
-		var t0 := float(bar * beats) * beat_s
-		var chord: Array = chords[bar % chords.size()]
-		for n in chord:
-			out.append({"kind": "pad", "note": float(n), "at": t0, "dur": float(beats) * beat_s * 0.98, "amp": 0.05, "pan": float(n % 3) * 0.4})
-		for bt in d["bass_beats"]:
-			out.append({"kind": "bass", "note": float(bass[bar % bass.size()]), "at": t0 + float(bt) * beat_s, "dur": beat_s * 1.6, "amp": 0.12, "pan": 0.0})
-		var step := float(beats) / float(maxi(1, pattern.size()))
-		for i in pattern.size():
-			out.append({"kind": "harp", "note": float(chord[int(pattern[i]) % chord.size()] + octave),
-				"at": t0 + float(i) * step * beat_s, "dur": step * beat_s * 1.3, "amp": 0.055, "pan": float(i % 2) * 0.3})
-		for bt2 in d["shaker"]:
-			out.append({"kind": "brush", "at": t0 + float(bt2) * beat_s, "amp": 0.035, "seed": bar})
-	for bl in d["bells"]:
-		out.append({"kind": "bell", "note": float(bl[1]), "at": float(bl[0]) * beat_s, "dur": 2.2, "amp": 0.075, "pan": 0.0})
-	for m in d["melody"]:
-		out.append({"kind": "flute", "note": float(m[0]), "at": float(m[1]) * beat_s, "dur": float(m[2]) * beat_s * 0.96, "amp": 0.1, "pan": 0.0})
-	return out
+	_job = {"name": name, "state": "bars", "bar": 0, "cursor": 0, "peak": 0.0, "gain": 1.0}
 
 
 func _advance() -> void:
@@ -435,18 +399,14 @@ func _advance() -> void:
 		return
 	var name := str(_job["name"])
 	_job_name = name
+	var bars := int(themes()[name]["bars"])
 	var n := _buf.size()
 	match str(_job["state"]):
-		"notes":
-			var notes: Array = _job["notes"]
-			var i := int(_job["i"])
-			var item: Dictionary = notes[i]
-			if str(item["kind"]) == "brush":
-				_brush(float(item["at"]), float(item["amp"]), int(item["seed"]))
-			else:
-				_voice(float(item["note"]), float(item["at"]), float(item["dur"]), float(item["amp"]), str(item["kind"]), float(item["pan"]))
-			_job["i"] = i + 1
-			if i + 1 >= notes.size():
+		"bars":
+			var bar := int(_job["bar"])
+			_render_bar(name, bar)
+			_job["bar"] = bar + 1
+			if bar + 1 >= bars:
 				_job["state"] = "peak"
 				_job["cursor"] = 0
 		"peak":
@@ -491,21 +451,6 @@ func _advance() -> void:
 			w.data = _bytes
 			_job = {}
 			_store(name, w)
-
-
-## тема готова: запоминаем и запускаем, если её ждали
-func _store(name: String, w: AudioStreamWAV) -> void:
-	_builts[name] = w
-	_streams[name] = w
-	if _pending == name:
-		_pending = ""
-		_player.stream = w
-		_player.play()
-		_apply(true)
-
-
-func _finish_job() -> void:
-	_job_name = ""
 
 
 ## тема готова: запоминаем и запускаем, если её ждали
