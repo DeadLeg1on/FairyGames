@@ -10,6 +10,8 @@ const INSTRUMENTS := ["harp", "bell", "flute", "bass", "pad", "glass"]
 var fails := 0
 ## сэмплы и статистика по темам: считаем один раз, чтобы тест не тормозил
 var _cache := {}
+## сколько миллисекунд занял синтез каждой темы
+var _synth_ms := {}
 
 
 func _ready() -> void:
@@ -19,6 +21,7 @@ func _ready() -> void:
 	_check_wiring()
 	_check_controls()
 	await _check_suspend()
+	print("MUSIC ", " ".join(_cache.keys()), " synth_ms=", _synth_ms)
 	print("FAILS ", fails)
 	get_tree().quit()
 
@@ -126,6 +129,7 @@ func _check_build() -> void:
 		var t0 := Time.get_ticks_msec()
 		var stream := Music.build(n)
 		var ms := Time.get_ticks_msec() - t0
+		_synth_ms[n] = ms
 		slowest = maxi(slowest, ms)
 		ok(stream != null, "тема %s собирается в поток" % n)
 		if stream == null:
@@ -182,7 +186,9 @@ func _check_wiring() -> void:
 	ok(Music.want_for("play", "endless") == "story", "в бесконечной охоте — тема глав")
 	ok(Music.want_for("play", "idle") == "hotel", "в отеле своя тема")
 	ok(Music.want_for("hotel", "idle") == "hotel", "экран отеля держит тему отеля")
-	ok(Music.want_for("scores", "idle") == "hotel", "рекорды отеля не переключают музыку на меню")
+	ok(Music.want_for("scores", "idle", true) == "hotel", "в окнах отеля его тема не сбивается на меню")
+	ok(Music.want_for("scores", "idle") == "menu", "вне отеля те же рекорды звучат темой меню")
+	ok(Music.want_for("menu", "idle", false) == "menu", "выход из отеля возвращает тему меню")
 	ok(Music.want_for("shop", "story") == "menu", "лавка из меню — тема меню")
 
 

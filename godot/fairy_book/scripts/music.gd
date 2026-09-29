@@ -50,10 +50,13 @@ func _ready() -> void:
 # ------------------------------------------------------------------ управление
 
 ## какая тема подходит экрану: меню, главам или отелю
-static func want_for(screen: String, mode: String) -> String:
+## in_hotel — открыт ли отель прямо сейчас (чтобы его экраны не сбивались на меню)
+static func want_for(screen: String, mode: String, in_hotel: bool = false) -> String:
 	if screen == "play":
 		return "hotel" if mode == "idle" else "story"
-	if screen == "hotel" or (mode == "idle" and screen != "play"):
+	if screen == "hotel":
+		return "hotel"
+	if in_hotel and ["shop", "scores", "rewards", "modes"].has(screen):
 		return "hotel"
 	return "menu"
 

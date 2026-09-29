@@ -80,6 +80,8 @@ var hotel_welcome := ""
 var hotel_sel_i := -1
 ## выбор курсором на сцене отеля: "" | "q:<гостья на ресепшене>" | "r:<номер>:<место>"
 var hotel_sel := ""
+## открыт ли отель прямо сейчас (музыка отеля держится и в его окнах)
+var hotel_open := false
 var hotel_theme_for := -1
 var hotel_proc_for := -1
 var hotel_sig := ""
@@ -230,7 +232,7 @@ func _go(s: String) -> void:
 
 ## музыка: меню, главы и отель — три темы, каждая в своём настроении
 func _sync_music() -> void:
-	Music.play(Music.want_for(screen, mode))
+	Music.play(Music.want_for(screen, mode, hotel_open))
 
 
 func _toggle_music() -> void:
@@ -546,6 +548,7 @@ func _resume() -> void:
 
 
 func _to_menu() -> void:
+	hotel_open = false
 	game.preview(0)
 	_go("menu")
 
@@ -2045,6 +2048,7 @@ func _open_hotel() -> void:
 	hotel_proc_for = -1
 	hotel_clock = 0.0
 	Hotel.save_state(hotel_state)
+	hotel_open = true
 	game.preview(Chapters.hotel_index())
 	Sfx.play("click")
 	_go("hotel")
