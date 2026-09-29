@@ -57,21 +57,21 @@ jobs:
       - name: Импорт проекта
         run: |
           set +e
-          ./godot-bin --headless --path godot/fairy_book --editor --quit > import.log 2>&1
+          timeout 300 ./godot-bin --headless --path godot/fairy_book --editor --quit > import.log 2>&1
           echo $? > import.status
           tail -15 import.log
 
       - name: Тесты (режимы, лавка, локализация)
         run: |
           set +e
-          ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1
+          timeout 300 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn > modes.log 2>&1
           echo $? > modes.status
           tail -25 modes.log
 
       - name: Тесты (экраны и переходы)
         run: |
           set +e
-          ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1
+          timeout 300 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn > ui.log 2>&1
           echo $? > ui.status
           tail -25 ui.log
 
