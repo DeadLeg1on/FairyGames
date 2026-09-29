@@ -47,7 +47,8 @@ jobs:
           mv "$bin" godot-bin
           echo "версия:"
           ./godot-bin --headless --version 2>&1 | tee version.log
-          if ! grep -q "^Godot Engine v4" version.log; then
+          # Godot 4 печатает на --version только номер: 4.7.2.stable.official.<hash>
+          if ! grep -qE "^v?[0-9]+\.[0-9]+" version.log; then
             echo "::error title=Godot не запускается::$(tail -c 1200 version.log | tr '\n' ';' | tr -d '\r')"
             ldd godot-bin 2>/dev/null | grep -i "not found" | tr '\n' ';' | sed 's/^/::warning title=Не хватает библиотек::/' || true
             exit 1
