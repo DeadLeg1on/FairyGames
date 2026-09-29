@@ -24,7 +24,12 @@ func _ready() -> void:
 	_check_wiring()
 	_check_controls()
 	await _check_suspend()
-	print("MUSIC synth_ms=", _synth_ms, " async=", _async_info)
+	# контрольные суммы тем: по ним видно, что сборка совпадает с эталоном (и с превью-стендом)
+	var checks := {}
+	for n in Music.track_names():
+		if _cache.has(n):
+			checks[n] = _cache[n]["check"]
+	print("MUSIC synth_ms=", _synth_ms, " async=", _async_info, " check=", checks)
 	print("FAILS ", fails)
 	get_tree().quit()
 

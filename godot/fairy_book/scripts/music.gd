@@ -354,13 +354,15 @@ static func _brush(at: float, amp: float, seed_i: int) -> void:
 	var n := _buf.size()
 	var start := int(at * RATE)
 	var count := int(0.07 * RATE)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 1000 + seed_i * 17
+	# свой маленький ГПСЧ вместо RandomNumberGenerator: щётка звучит одинаково
+	# на всех платформах и в любой момент сборки (и совпадает со стендом-превью)
+	var state := 1000 + seed_i * 17
 	var prev := 0.0
 	var k := exp(-38.0 / RATE)
 	var env := amp
 	for i in count:
-		var x := rng.randf() * 2.0 - 1.0
+		state = (state * 1103515245 + 12345) % 2147483648
+		var x := float(state) / 1073741824.0 - 1.0
 		var y := x - prev * 0.75  # грубый high-pass
 		prev = x
 		env *= k
