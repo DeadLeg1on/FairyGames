@@ -1,0 +1,41 @@
+name: Godot tests
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скачать Godot 4.7.2
+        run: |
+          set -e
+          curl -fsSL -o godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          mv Godot_v4.7.2-stable_linux.x86_64 godot
+          chmod +x godot
+          ./godot --headless --version
+
+      - name: Импорт проекта
+        run: ./godot --headless --path godot/fairy_book --editor --quit
+
+      - name: Режимы, лавка, локализация
+        run: |
+          set -o pipefail
+          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn 2>&1 | tee modes.log
+          grep -q "FAILS 0" modes.log
+
+      - name: Экраны и переходы
+        run: |
+          set -o pipefail
+          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/ui_flow.tscn 2>&1 | tee ui.log
+          grep -q "FAILS 0" ui.log
+
+      - name: Проверки движка (автоплей, бесконечный режим)
+        run: |
+          set -o pipefail
+          ./godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/endless_check.tscn 2>&1 | tee endless.log
