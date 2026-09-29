@@ -358,6 +358,14 @@ func _find_hit(list: Array, kind: String, a: Variant) -> Dictionary:
 	return {}
 
 
+## кровать ищем и по номеру, и по месту: у "bed" в a лежит номер, в b — место
+func _find_bed(list: Array, room_i: int, slot: int) -> Dictionary:
+	for h in list:
+		if str(h["kind"]) == "bed" and int(h["a"]) == room_i and int(h["b"]) == slot:
+			return h
+	return {}
+
+
 ## сцена: клик по фее, по кровати и по станции даёт правильные области
 func _check_view() -> void:
 	var st := Hotel.fresh()
@@ -392,10 +400,11 @@ func _check_view() -> void:
 	v.pick((res["rect"] as Rect2).get_center())
 	ok(str(got[-1][0]) == "resident" and int(got[-1][1]) == 0 and int(got[-1][2]) == 0, "клик по жиличке сообщает её номер и место")
 
-	var bed := _find_hit(hs, "bed", 1)
+	var bed := _find_bed(hs, 0, 1)
 	ok(not bed.is_empty(), "свободная кровать кликабельна")
 	v.pick((bed["rect"] as Rect2).get_center())
 	ok(str(got[-1][0]) == "bed" and int(got[-1][1]) == 0 and int(got[-1][2]) == 1, "клик по свободной кровати сообщает номер и место")
+	ok(_find_bed(hs, 0, 0).is_empty(), "занятая кровать считается жиличкой, а не свободным местом")
 
 	var stn := _find_hit(hs, "station", "tea")
 	ok(not stn.is_empty(), "станция процедур кликабельна")
