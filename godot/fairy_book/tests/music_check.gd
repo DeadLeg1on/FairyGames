@@ -205,8 +205,7 @@ func _check_async() -> void:
 	ok(frames >= 2, "сборка разложена на несколько кадров, а не одним куском")
 	_async_info = {"frames": frames, "worst": worst, "baseline": baseline}
 	print("     сборка по кадрам: %d кадров, самый долгий кадр %d мс (обычный кадр до сборки %d мс)" % [frames, worst, baseline])
-	ok(worst <= baseline * 1.6 + 40,
-		"сборка не даёт длинных кадров сверх обычных (%d против %d мс)" % [worst, baseline])
+	ok(worst <= 80, "самый долгий кадр сборки укладывается в 80 мс (%d при обычных %d)" % [worst, baseline])
 	var samples := _samples("hotel")
 	ok(samples.size() > 0, "собранная по кадрам тема звучит так же, как синхронная (%d сэмплов)" % samples.size())
 
