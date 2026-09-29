@@ -70,6 +70,14 @@ func _checksum(s: PackedInt32Array) -> int:
 	return acc
 
 
+## самый резкий перепад между соседними сэмплами (1.0 — «от упора до упора»)
+func _max_slope(s: PackedInt32Array, from: int, to: int) -> float:
+	var m := 0.0
+	for i in range(maxi(1, from), mini(to, s.size())):
+		m = maxf(m, absf(float(s[i] - s[i - 1])) / 32767.0)
+	return m
+
+
 ## RMS отрезка (считается по кэшу, без повторного декодирования)
 func _rms_range(name: String, from: int, to: int) -> float:
 	var s := _samples(name)
@@ -149,12 +157,19 @@ func _check_loop() -> void:
 		ok(st.loop_mode == AudioStreamWAV.LOOP_FORWARD and st.loop_begin == 0 and st.loop_end == st.data.size() / 2,
 			"тема %s зациклена целиком (0..%d)" % [n, st.loop_end])
 		# шов петли: «хвосты» нот довёрнуты в начало, поэтому громкость на стыке ровная
-		var head := _rms_range(n, 0, int(Music.RATE * 0.05))
-		var tail := _rms_range(n, int(Music.length_of(n) * Music.RATE) - int(Music.RATE * 0.05), int(Music.length_of(n) * Music.RATE))
-		ok(absf(head - tail) < 0.15, "на стыке петли %s нет провала или щелчка (%.3f против %.3f)" % [n, head, tail])
-		var first := _samples(n)[0]
-		var last := _samples(n)[int(Music.length_of(n) * Music.RATE) - 1]
-		ok(absi(first - last) < 12000, "скачок на стыке %s остаётся в пределах волны" % n)
+		var samples := _samples(n)
+		var end := int(Music.length_of(n) * Music.RATE)
+		# щелчок на стыке виден как всплеск производной: сравниваем с самым резким
+		# перепадом внутри темы (сам стык может попадать на сильную долю — это нормально)
+		var global_slope := _max_slope(samples, 1, end)
+		var seam_slope := maxf(_max_slope(samples, end - 32, end), _max_slope(samples, 1, 32))
+		seam_slope = maxf(seam_slope, absf(float(samples[0] - samples[end - 1])) / 32767.0)
+		ok(seam_slope <= global_slope * 1.2 + 0.02,
+			"стык петли %s не щёлкает (перепад %.3f при максимуме %.3f)" % [n, seam_slope, global_slope])
+		# и не проваливается в тишину: вокруг стыка звук продолжается
+		var win := int(Music.RATE * 0.15)
+		var seam_rms := sqrt((pow(_rms_range(n, end - win, end), 2.0) + pow(_rms_range(n, 0, win), 2.0)) * 0.5)
+		ok(seam_rms > _rms(n) * 0.3, "на стыке петли %s не тишина (RMS %.3f при среднем %.3f)" % [n, seam_rms, _rms(n)])
 
 
 # ------------------------------------------------------------------ выбор темы
@@ -174,8 +189,13 @@ func _check_wiring() -> void:
 func _check_controls() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(Music.SETTINGS)
-	var was_on: Variant = cfg.get_value("audio", "music_on", null)
-	var was_vol: Variant = cfg.get_value("audio", "music", null)
+	# читаем только существующие ключи: get_value с null по умолчанию пишет ERROR в лог
+	var was_on: Variant = null
+	var was_vol: Variant = null
+	if cfg.has_section_key("audio", "music_on"):
+		was_on = cfg.get_value("audio", "music_on")
+	if cfg.has_section_key("audio", "music"):
+		was_vol = cfg.get_value("audio", "music")
 
 	Music.play("story")
 	ok(Music.track == "story", "тема глав включается")
