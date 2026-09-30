@@ -2013,7 +2013,8 @@ func _guard_make_spots() -> Array[Vector2]:
 			dir = dir.normalized()
 			var nrm := Vector2(-dir.y, dir.x)
 			for side in [-1.0, 1.0]:
-				var s := p + nrm * (54.0 * side)
+				# side приходит из нетипизированного массива — приводим к float, иначе тип не выведется
+				var s := p + nrm * (54.0 * float(side))
 				if s.x < 46.0 or s.x > W - 46.0 or s.y < 128.0 or s.y > gy() - 46.0:
 					continue
 				if bar.has_point(s):
