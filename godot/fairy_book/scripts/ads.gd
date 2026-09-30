@@ -36,8 +36,9 @@ func _ready() -> void:
 		_impl = Yandex
 	elif OS.has_feature("android"):
 		provider = PROVIDER_ADMOB
-		var s := load("res://scripts/admob.gd")
-		_impl = s.new()
+		# явный тип: load() для скрипта, который ещё не скомпилирован, тип не выводит
+		var impl_script: GDScript = load("res://scripts/admob.gd")
+		_impl = impl_script.new()
 		_impl.name = "AdMob"
 		add_child(_impl)
 	if _impl != null:
