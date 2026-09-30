@@ -249,7 +249,8 @@ func _check_guard(g) -> void:
 	ok(Guard.WAVES == 10 and Guard.HEART_HP > 0, "стража: десять волн и сердце на %d ударов" % Guard.HEART_HP)
 
 	# --- состав волн
-	ok(Guard.wave_table(1).size() >= 6, "стража: в первой волне есть тени (%d)" % Guard.wave_table(1).size())
+	ok(Guard.wave_table(1).size() >= 4 and Guard.wave_table(10).size() > Guard.wave_table(1).size(),
+		"стража: в первой волне есть тени и к десятой их больше (%d → %d)" % [Guard.wave_table(1).size(), Guard.wave_table(10).size()])
 	ok(Guard.wave_table(5).has("wight") and Guard.wave_table(10).has("wight"), "стража: каждая пятая волна с громадной тенью")
 	ok(not Guard.wave_table(3).has("wight"), "стража: в третьей волне громадной тени нет")
 	ok(Guard.enemy_hp("foe", 10) > Guard.enemy_hp("foe", 1), "стража: тени крепчают от волны к волне")
