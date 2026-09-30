@@ -36,6 +36,9 @@ var screen := "menu"
 var mode := "story"
 var story_idx := 0
 var prev_clear := {}
+## колода сказок: какие карты собраны и какая выпала последней
+var deck := Cards.empty()
+var last_card := ""
 var final_score := 0
 var final_chapter := 0
 var final_progress := 0
@@ -130,6 +133,7 @@ func _ready() -> void:
 	skin = Shop.load_skin()
 	garden = Shop.load_garden()
 	daily = Shop.load_daily()
+	deck = Cards.load_owned()
 	blessing = bool(_read_setting("ads", "blessed", false))
 	return_after_break = Time.get_unix_time_from_system() - Shop.last_seen() > RETURN_AFTER
 	Shop.mark_seen()
@@ -140,6 +144,8 @@ func _ready() -> void:
 	game.upgrades = upgrades.duplicate()
 	game.skin = skin
 	game.blessing = 0.15 if blessing else 0.0
+	# собранные наборы колоды добавляют очков на весь забег
+	game.card_bonus = Cards.score_bonus(deck)
 	game.chapter_cleared.connect(_on_chapter_cleared)
 	game.game_over.connect(_on_game_over)
 
@@ -319,6 +325,10 @@ func _record(score: int, chapter: int) -> void:
 	scores_tab = mode
 	# пыльца за очки с прошлого начисления (после «второго шанса» — только прирост)
 	last_pollen = Shop.pollen_for(score - granted_score, int(upgrades["bag"]))
+	# «Ночные сказки» в колоде прибавляют пыльцы
+	var card_pollen := Cards.pollen_bonus(deck)
+	if card_pollen > 0.0 and last_pollen > 0:
+		last_pollen = int(round(float(last_pollen) * (1.0 + card_pollen)))
 	granted_score = score
 	doubled = false
 	# «Ежедневный вызов» платит двойную пыльцу и ведёт серию дней
@@ -338,6 +348,7 @@ func _record(score: int, chapter: int) -> void:
 
 func _on_chapter_cleared(idx: int, bonus: int, score: int) -> void:
 	_unlock(idx + 2)
+	_draw_card()
 	if _single_run():
 		# одиночные режимы заканчиваются на первой пройденной главе
 		_record(score, idx)
@@ -558,6 +569,7 @@ func _resume() -> void:
 
 
 func _to_menu() -> void:
+	last_card = ""
 	hotel_open = false
 	game.preview(0)
 	_go("menu")
@@ -609,6 +621,82 @@ func _open_rewards() -> void:
 		return
 	Sfx.play("click")
 	_go("rewards")
+
+
+# ---------------------------------------------------------------- колода сказок
+
+## за пройденную главу вытягиваем одну карту: зерно — от времени, пыльцы и колоды
+func _draw_card() -> void:
+	var seed_int := int(Time.get_unix_time_from_system() * 1000.0) % 1000003 + pollen + Cards.count(deck) * 31
+	last_card = Cards.take(seed_int)
+	if last_card == "":
+		return
+	deck = Cards.load_owned()
+	game.card_bonus = Cards.score_bonus(deck)
+	Sfx.play("bloom")
+
+
+func _open_cards() -> void:
+	Sfx.play("click")
+	_go("cards")
+
+
+func _close_cards() -> void:
+	Sfx.play("click")
+	_to_menu()
+
+
+## экран «Колода сказок»: три набора по пять карт и бонусы за сбор
+func _build_cards(box: VBoxContainer, w: float) -> void:
+	box.add_child(_lbl(I18n.t("✧ Колода сказок"), 44 if small else 52, GOLD, true))
+	box.add_child(_lbl(I18n.t("Карты выпадают за пройденные главы. Собери набор — и маленький бонус останется навсегда."), 19, Color(Sketch.INK, 0.8)))
+	box.add_child(_lbl(I18n.t("Собрано карт: %d из %d") % [Cards.count(deck), Cards.CARDS.size()], 22, POLLEN_COL, true))
+	box.add_child(_lbl(Cards.bonus_text(deck), 19, Color(Sketch.INK, 0.75)))
+	box.add_child(_gap(6))
+	for s in Cards.sets():
+		var sid := str(s["id"])
+		var got := Cards.set_count(deck, sid)
+		var total := Cards.cards_of(sid).size()
+		var full := got == total and total > 0
+		var head := "%s %s · %d/%d" % [str(s["icon"]), str(s["title"]), got, total]
+		head += ("  ✓ " + str(s["bonus"])) if full else ("  — " + str(s["bonus"]))
+		box.add_child(_lbl(head, 22, GOLD if full else Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
+		var grid := GridContainer.new()
+		# пять карт набора в ряд, если места хватает, иначе три
+		grid.columns = 5 if w > 520.0 else 3
+		grid.add_theme_constant_override("h_separation", 8)
+		grid.add_theme_constant_override("v_separation", 8)
+		for c in Cards.cards_of(sid):
+			grid.add_child(_card_cell(c, bool(deck.get(str(c["id"]), false))))
+		box.add_child(grid)
+		box.add_child(_gap(4))
+	box.add_child(_btn_row([_small_btn(I18n.t("← Назад"), _close_cards)], 460))
+
+
+## одна карта: найденная показана целиком, ненайденная — рубашкой
+func _card_cell(c: Dictionary, owned: bool) -> Control:
+	var cell := PanelContainer.new()
+	cell.custom_minimum_size = Vector2(0, 96)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var st := StyleBoxFlat.new()
+	st.bg_color = Color(0.99, 0.97, 0.92, 0.92) if owned else Color(Sketch.INK, 0.06)
+	st.set_border_width_all(2)
+	st.border_color = Color(GOLD, 0.85) if owned else Color(Sketch.INK, 0.22)
+	st.set_corner_radius_all(10)
+	st.set_content_margin_all(6)
+	cell.add_theme_stylebox_override("panel", st)
+	var v := VBoxContainer.new()
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
+	v.add_theme_constant_override("separation", 1)
+	cell.add_child(v)
+	if owned:
+		v.add_child(_lbl(str(c["icon"]), 30, GOLD, true))
+		v.add_child(_lbl(str(c["title"]), 16, Sketch.INK, true))
+		v.add_child(_lbl(str(c["desc"]), 13, Color(Sketch.INK, 0.7)))
+	else:
+		v.add_child(_lbl("?", 30, Color(Sketch.INK, 0.3), true))
+		v.add_child(_lbl(I18n.t("ещё не найдена"), 15, Color(Sketch.INK, 0.45)))
+	return cell
 
 
 ## строчка о прогрессе, саде и вызове дня на главном экране
@@ -666,6 +754,8 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 		_to_menu()
 	elif s == "rewards" and code == KEY_ESCAPE:
 		_to_menu()
+	elif s == "cards" and code == KEY_ESCAPE:
+		_close_cards()
 	elif s == "play" and (code == KEY_ESCAPE or code == KEY_P):
 		_pause()
 	elif s == "paused" and (code == KEY_ESCAPE or code == KEY_P or code == KEY_ENTER):
@@ -733,7 +823,7 @@ func _build_overlay() -> void:
 	match screen:
 		"menu", "lang":
 			dim.color = Color(0.937, 0.91, 0.847, 0.35)
-		"story", "scores", "select", "shop", "modes", "rewards", "settings":
+		"story", "scores", "select", "shop", "modes", "rewards", "settings", "cards":
 			dim.color = Color(0.118, 0.094, 0.078, 0.25)
 		"hotel":
 			dim.color = Color(0.298, 0.196, 0.118, 0.3)
@@ -765,6 +855,8 @@ func _build_overlay() -> void:
 			maxw = 980.0 if wide else 560.0
 		"rewards":
 			maxw = 900.0 if wide else 560.0
+		"cards":
+			maxw = 940.0 if wide else 560.0
 		"hotel":
 			maxw = 980.0 if wide else 560.0
 		"settings":
@@ -805,6 +897,8 @@ func _build_overlay() -> void:
 			_build_modes(box, inner_w)
 		"rewards":
 			_build_rewards(box, inner_w)
+		"cards":
+			_build_cards(box, inner_w)
 		"hotel":
 			_build_hotel(box, inner_w)
 		"settings":
@@ -931,6 +1025,7 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	modes_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(modes_btn)
 	var foot: Array = [_small_btn(I18n.t("✿ Лавка · ✦ %d") % pollen, _open_shop)]
+	foot.append(_small_btn(I18n.t("✧ Колода · %d/%d") % [Cards.count(deck), Cards.CARDS.size()], _open_cards))
 	foot.append(_small_btn(I18n.t("⚙ Настройки"), _open_settings))
 	foot.append(_small_btn(I18n.t("Рекорды"), _open_scores.bind("story")))
 	if not OS.has_feature("web"):
@@ -1320,6 +1415,10 @@ func _build_story(box: VBoxContainer, w: float) -> void:
 		var pc := Chapters.get_ch(int(prev_clear["idx"]))
 		box.add_child(_lbl("«" + str(pc["outro"]) + "»", tsz))
 		box.add_child(_lbl(I18n.t("Бонус за главу: +%d · Всего очков: %d%s") % [prev_clear["bonus"], prev_clear["score"], " · +1 ♥" if mode == "story" else ""], 19, Color(Sketch.INK, 0.8)))
+		if last_card != "":
+			var cl := _lbl(Cards.found_text(last_card), 21, GOLD, true)
+			box.add_child(cl)
+			wobblers.append(cl)
 		var sep := HSeparator.new()
 		var ss := StyleBoxLine.new()
 		ss.color = Color(Sketch.INK, 0.4)
@@ -1529,6 +1628,8 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 	elif rank > 0:
 		a.add_child(_lbl(I18n.t("Место в таблице: %d") % (rank + 1), 24))
 	a.add_child(_lbl(I18n.t("+%d ✦ пыльцы%s · всего %d") % [last_pollen * (2 if doubled else 1), " (×2)" if doubled else "", pollen], 22, POLLEN_COL))
+	if last_card != "" and screen != "over":
+		a.add_child(_lbl(Cards.found_text(last_card), 22, GOLD, true))
 	b.add_child(_score_table(rank, 5 if small else 7))
 	if screen == "over" and continues < max_continues():
 		if mode == "race" and game.time_failed:

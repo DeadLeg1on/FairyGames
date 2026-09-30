@@ -89,6 +89,8 @@ var upgrades := Shop.empty()
 var skin := "classic"
 ## «благословение фей» за рекламу: +1 щит и +15% очков на забег
 var blessing := 0.0
+## бонус колоды сказок: собранные наборы прибавляют процентов к очкам
+var card_bonus := 0.0
 var shield := 0
 ## таймер «Гонки со временем»
 var time_left := 0.0
@@ -728,7 +730,7 @@ func add_score(pts: int, x: float, y: float, col: Color) -> int:
 	combo += 1
 	combo_t = 2.4
 	var mult := mini(5, 1 + combo / 5)
-	var v := int(round(pts * mult * score_mult() * (1.0 + 0.05 * int(upgrades["luck"]) + blessing)))
+	var v := int(round(pts * mult * score_mult() * (1.0 + 0.05 * int(upgrades["luck"]) + blessing + card_bonus)))
 	score += v
 	# «Колокольчик»: каждые N целей — сердце
 	var step := 10 - 3 * (int(upgrades["bell"]) - 1) if int(upgrades["bell"]) > 0 else 0
@@ -1967,7 +1969,8 @@ func _clear_chapter() -> void:
 
 ## «Звёздная стража»: раскладка поля и отсчёт до первой волны
 func _init_guard() -> void:
-	guard_dew = Guard.START_DEW
+	# «Колючие сказки» в колоде дают росу на старте обороны
+	guard_dew = Guard.START_DEW + Cards.dew_bonus(Cards.load_owned())
 	guard_hp = Guard.HEART_HP
 	guard_queue = []
 	guard_gap = 1.0

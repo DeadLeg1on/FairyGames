@@ -63,6 +63,11 @@ func _run_flow() -> void:
 		["rewards", func(): m._open_rewards()],
 		["rewards", func(): m.unlocked = 9; m._chest_for_ad()],
 		["menu", func(): m._to_menu()],
+		# --- колода сказок ---------------------------------------------------
+		["cards", func(): m._open_cards()],
+		# одна карта найдена: экран показывает и её, и рубашки остальных
+		["cards", func(): m.last_card = "lily"; m.deck = Cards.grant(m.deck, "lily"); m._build_overlay()],
+		["menu", func(): m._close_cards()],
 		# --- гонка со временем --------------------------------------------
 		["select", func(): m.unlocked = 9; m._choose_mode("race")],
 		["story", func(): m._pick_chapter(4)], # звёздная глава — можно и в гонке
@@ -140,6 +145,8 @@ func _run_flow() -> void:
 		["menu", func(): m._toggle_lang()],      # меню по-английски
 		["shop", func(): m._open_shop()],        # лавка по-английски
 		["menu", func(): m._close_shop()],
+		["cards", func(): m._open_cards()],      # колода по-английски
+		["menu", func(): m._close_cards()],
 		["menu", func(): m._toggle_lang()],      # обратно на русский
 	]
 	for st in steps:

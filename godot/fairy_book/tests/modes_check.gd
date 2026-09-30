@@ -262,7 +262,10 @@ func _check_guard(g) -> void:
 	ok(g.is_guard() and not g.needs_goal(), "стража: цель главы не нужна — считаем волны")
 	ok(g.guard_path.size() >= 2 and g.guard_len > 0.0, "стража: тропа построена (%d точек, %.0f px)" % [g.guard_path.size(), g.guard_len])
 	ok(g.guard_spots.size() >= 4, "стража: есть места под башни (%d)" % g.guard_spots.size())
-	ok(g.guard_dew == Guard.START_DEW and g.guard_hp == Guard.HEART_HP, "стража: роса и сердце на старте")
+	# роса на старте зависит и от колоды сказок — считаем ожидаемое значение сами
+	var want_dew: int = Guard.START_DEW + Cards.dew_bonus(Cards.load_owned())
+	ok(g.guard_dew == want_dew and g.guard_hp == Guard.HEART_HP,
+		"стража: роса и сердце на старте (%d ♥ %d)" % [g.guard_dew, g.guard_hp])
 	var on_path := 0
 	for p in g.guard_spots:
 		if Guard.dist_to_path(g.guard_path, p) < 34.0:

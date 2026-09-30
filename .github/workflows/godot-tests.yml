@@ -76,6 +76,14 @@ jobs:
           echo $? > modes.status
           tail -25 modes.log
 
+      - name: "Тесты (колода сказок: карты, наборы, бонусы)"
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/cards_check.tscn > cards.log 2>&1
+          echo $? > cards.status
+          tail -45 cards.log
+
       - name: Тесты (экраны и переходы)
         if: steps.import.outputs.compile == '1'
         run: |
@@ -156,8 +164,8 @@ jobs:
 
           PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory|не найдено)')
           # только эти сцены печатают итоговую строку FAILS
-          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log', 'music.log', 'audio.log', 'ads.log')
-          TESTS = ('modes.log', 'ui.log', 'music.log', 'audio.log', 'hotel.log', 'ads.log', 'endless.log', 'autoplay.log')
+          FAILS_TESTS = ('modes.log', 'cards.log', 'ui.log', 'hotel.log', 'music.log', 'audio.log', 'ads.log')
+          TESTS = ('modes.log', 'cards.log', 'ui.log', 'music.log', 'audio.log', 'hotel.log', 'ads.log', 'endless.log', 'autoplay.log')
           errors, fails, ok_count = [], [], {}
 
           for name in ('version.log', 'import.log') + TESTS:
