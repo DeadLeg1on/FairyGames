@@ -21,6 +21,19 @@ const HAZARD_POOL := ["wasp", "moth", "orb", "inkbub", "spider", "icicle", "bolt
 const WAVE_FIRST := 4.0
 const WAVE_MIN := 5.0
 ## снаряды/враги волн, которые требуют особой настройки при спавне
+## «Хор фей»: подружки и соперницы летят в одной главе вместе с игроком
+const ALLY_COL := Color("#5cc7c0")
+const RIVAL_COL := Color("#8a6ab0")
+## сколько добычи вмещает фея в каждой главе (как в can_pick)
+const CHOIR_CAP := {"pollen": 6, "drop": 5, "shard": 3, "sun": 3}
+## что подружка может принести фее (есть куда нести)
+const CHOIR_CARRY := ["pollen", "drop", "shard", "sun"]
+## что может унести соперница — любая свободная добыча главы
+const CHOIR_LOOT := ["pollen", "drop", "shard", "sun", "flake", "crystal", "firefly"]
+## главы-палитры: подружки — водяная и садовая, соперницы — грибная и грозовая
+const ALLY_LOOKS := [1, 7]
+const RIVAL_LOOKS := [5, 8]
+
 const HAZARD_RADIUS := {"wasp": 14.0, "moth": 16.0, "orb": 9.0, "inkbub": 16.0, "spider": 13.0, "icicle": 10.0, "bolt": 28.0}
 
 
@@ -121,6 +134,31 @@ var timers := {}
 var wind := 0.0
 var wind_t := 0.0
 var followers := 0
+## «Хор фей»: очки соперниц, запев (×2) и сколько раз подружки выручили
+var rival_score := 0
+var chorus := 0.0
+var chorus_t := 0.0
+var choir_scared := 0
+var choir_saved := 0
+
+## Звёздная стража (guard): тропа, башни-цветы и волны теней.
+## Сердце поляны в конце тропы держит удар; роса — валюта стройки.
+var guard_path: Array[Vector2] = []
+var guard_len := 0.0
+var guard_spots: Array[Vector2] = []
+var guard_dew := Guard.START_DEW
+var guard_hp := Guard.HEART_HP
+var guard_queue: Array = []
+var guard_gap := 1.0
+var guard_rest := 0.0
+var guard_tool := 0
+var guard_built := 0
+var guard_kills := 0
+var guard_leaks := 0
+var guard_failed := false
+var guard_msg := ""
+var guard_msg_t := 0.0
+
 var trail: Array[Vector2] = []
 var seed_counter := 1
 
@@ -237,6 +275,8 @@ func _on_resize() -> void:
 		if e.kind == "bud" or e.kind == "lantern":
 			e.x = minf(e.x, W - 40)
 			e.y = minf(e.y, gy() - 40)
+	if is_guard():
+		_guard_layout()
 	bg_node.queue_redraw()
 
 
@@ -269,6 +309,11 @@ func new_run(m: String = "") -> void:
 	tick_at = -1
 	wave_t = WAVE_FIRST
 	wave_max = WAVE_FIRST
+	rival_score = 0
+	chorus = 0.0
+	chorus_t = 0.0
+	choir_scared = 0
+	choir_saved = 0
 
 
 func max_start_hearts() -> int:
@@ -338,9 +383,27 @@ func is_zen() -> bool:
 	return mode == "zen"
 
 
+## «Хор фей»: глава с подружками и соперницами
+func is_choir() -> bool:
+	return mode == "choir"
+
+
+## «Звёздная стража»: оборона тропы башнями-цветами
+func is_guard() -> bool:
+	return mode == "guard"
+
+
+## тени «Звёздной стражи» — все разновидности одним набором
+const GUARD_FOES := {"foe": true, "fleet": true, "brute": true, "wight": true}
+
+
+func _guard_is_foe(kind: String) -> bool:
+	return GUARD_FOES.has(kind)
+
+
 ## нужен ли режиму счётчик выполненной цели (в «Марафоне» и «Дуэли» его нет)
 func needs_goal() -> bool:
-	return not (is_marathon() or is_duel())
+	return not (is_marathon() or is_duel() or is_guard())
 
 
 ## бюджет времени главы для «Гонки» с учётом часов из лавки
@@ -360,12 +423,15 @@ func look_ch() -> Dictionary:
 func score_mult() -> int:
 	if mode == "hard" or mode == "daily":
 		return 2
+	# запоёте хором — очки удваиваются, пока хор звучит
+	if is_choir() and chorus > 0.0:
+		return 2
 	return 1
 
 
 ## перезапуск текущего режима (одиночные режимы — та же глава)
 func restart() -> void:
-	var idx := ch_idx if (Modes.pick(mode) or is_duel() or is_daily()) else 0
+	var idx := ch_idx if (Modes.pick(mode) or is_duel() or is_daily() or is_guard()) else 0
 	new_run()
 	start_chapter(idx)
 
@@ -420,8 +486,17 @@ func start_chapter(idx: int) -> void:
 	if is_duel():
 		boss_wave = 0
 	_init_chapter()
+	if is_guard():
+		_init_guard()
 	if is_duel():
 		spawn_duel_boss()
+	if is_choir():
+		rival_score = 0
+		chorus = 0.0
+		chorus_t = 0.0
+		choir_scared = 0
+		choir_saved = 0
+		_spawn_choir()
 	state = St.PLAY
 	burst(px, py, 24, ch()["wing"], 220, 1)
 	ring(px, py, 60, ch()["main"])
@@ -446,6 +521,15 @@ func revive() -> void:
 	burst(px, py, 40, ch()["wing"], 300, 1)
 	ring(px, py, 120, ch()["main"])
 	pop_text(px, py - 40, I18n.t("Второй шанс!"), ch()["main"], 32)
+	if is_guard():
+		guard_hp = Guard.HEART_HP
+		guard_failed = false
+		guard_queue.clear()
+		guard_rest = Guard.WAVE_BREAK
+		for e in ents:
+			if _guard_is_foe(e.kind):
+				e.dead = true
+		ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
 	Sfx.play("bloom")
 
 
@@ -469,12 +553,23 @@ func _unhandled_input(ev: InputEvent) -> void:
 			match k.physical_keycode:
 				KEY_SPACE, KEY_SHIFT, KEY_J, KEY_X:
 					dash_queued = true
+				KEY_1, KEY_2, KEY_3:
+					# «Звёздная стража»: выбор башни-цвета
+					if is_guard() and state == St.PLAY:
+						guard_tool = k.physical_keycode - KEY_1
+						Sfx.play("click", 1.3)
+				KEY_B, KEY_E:
+					# «Звёздная стража»: построить там, где летит фея
+					if is_guard() and state == St.PLAY:
+						_guard_build_near()
 			touch_mode = false
 	elif ev is InputEventMouseButton:
 		var mb := ev as InputEventMouseButton
 		if mb.device == InputEvent.DEVICE_ID_EMULATION:
 			return
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT and state == St.PLAY:
+			if _guard_tap(mb.position):
+				return
 			dash_queued = true
 	elif ev is InputEventScreenTouch:
 		var st := ev as InputEventScreenTouch
@@ -505,6 +600,8 @@ func _touch_down(index: int, pos: Vector2) -> void:
 	if pos.distance_to(Vector2(b.x, b.y)) < b.z + 25:
 		dash_queued = true
 		dash_btn_id = index
+		return
+	if _guard_tap(pos):
 		return
 	if not joy_active:
 		joy_active = true
@@ -662,6 +759,21 @@ func damage(force: bool = false) -> bool:
 	# «Тихий полёт» — режим без урона
 	if is_zen():
 		return false
+	# «Хор фей»: ближайшая подружка закрывает фею собой и сама кружится
+	if is_choir():
+		for e in ents:
+			if e.kind == "ally" and e.a <= 0.0 and Vector2(e.x - px, e.y - py).length() < 74:
+				e.a = 5.0
+				e.b = 0.0
+				choir_saved += 1
+				inv = 1.2
+				shake = 12.0
+				hitstop = 0.06
+				burst(e.x, e.y, 20, ALLY_COL, 240, 1)
+				ring(e.x, e.y, 60, ALLY_COL)
+				pop_text(e.x, e.y - 32, I18n.t("Подружка прикрыла!"), ALLY_COL, 26)
+				Sfx.play("crash")
+				return true
 	# «Хрустальный амулет» — один раз за забег спасает от гибели
 	if hearts <= 1 and int(upgrades["amulet"]) > 0 and not amulet_used:
 		amulet_used = true
@@ -735,6 +847,8 @@ func boss_ent() -> Ent:
 # ================================================================= главы
 
 func _init_chapter() -> void:
+	if is_guard():
+		return
 	var g := gy()
 	match cid():
 		"flower":
@@ -806,6 +920,9 @@ func _init_chapter() -> void:
 
 
 func _update_chapter(dt: float) -> void:
+	if is_guard():
+		_update_guard(dt)
+		return
 	var t := ch_t
 	var playing := state == St.PLAY
 	for k in timers.keys():
@@ -1357,6 +1474,8 @@ func _update_chapter(dt: float) -> void:
 		_update_marathon(dt)
 	elif is_endless():
 		_update_endless()
+	elif is_choir():
+		_update_choir(dt)
 	if needs_goal() and state == St.PLAY and progress >= int(ch()["goal"]):
 		_clear_chapter()
 
@@ -1505,6 +1624,156 @@ func _update_endless() -> void:
 			pop_text(W / 2, 120, I18n.t("Король Теней вернулся!"), Color("#b58cff"), 30)
 			shake = 10.0
 			Sfx.play("boom")
+
+
+# ================================================================= хор фей
+
+## «Хор фей»: две подружки и две соперницы появляются вместе с главой
+func _spawn_choir() -> void:
+	for i in 2:
+		var a := spawn("ally", px - 70 - i * 46, py + (34 if i == 0 else -38), 13)
+		a.hp = ALLY_LOOKS[i]
+		a.d = float(i)
+	for i in 2:
+		var r := spawn("rival", W * (0.22 + 0.56 * i), 120 + i * 46, 13)
+		r.hp = RIVAL_LOOKS[i]
+		r.d = float(i)
+
+
+## ближайшая добыча из списка; null, если в радиусе ничего нет
+func _choir_nearest(e: Ent, kinds: Array, max_d: float) -> Ent:
+	var best: Ent = null
+	var bd := max_d
+	for q in ents:
+		if q.dead or not kinds.has(q.kind):
+			continue
+		# пойманный светлячок уже летит за феей — отнимать его нельзя
+		if q.kind == "firefly" and q.b > 0:
+			continue
+		var d := Vector2(q.x - e.x, q.y - e.y).length()
+		if d < bd:
+			bd = d
+			best = q
+	return best
+
+
+## плавный полёт к точке: та же инерция, что у феи, но без рывка
+func _choir_fly(e: Ent, tx: float, ty: float, dt: float, speed: float) -> void:
+	var dx := tx - e.x
+	var dy := ty - e.y
+	var l := maxf(1.0, Vector2(dx, dy).length())
+	var k := 1.0 - exp(-dt * 6.0)
+	e.vx += (dx / l * speed - e.vx) * k
+	e.vy += (dy / l * speed - e.vy) * k
+	e.x = clampf(e.x + e.vx * dt, 20.0, W - 20.0)
+	e.y = clampf(e.y + e.vy * dt, 90.0, gy() - 20.0)
+
+
+## подружки собирают добычу и прикрывают фею, соперницы воруют её наперегонки;
+## держитесь втроём — запоёт хор и очки удвоятся
+func _update_choir(dt: float) -> void:
+	if state != St.PLAY:
+		return
+	var near := 0
+	for e in ents:
+		if e.kind != "ally":
+			continue
+		if e.a > 0.0:
+			# закружилась, прикрыв фею: приходит в себя и медленно опускается
+			e.a -= dt
+			e.y = minf(gy() - 24.0, e.y + 26.0 * dt)
+			e.x += sin(time * 6.0 + e.seed) * 18.0 * dt
+			continue
+		if Vector2(e.x - px, e.y - py).length() < 96.0:
+			near += 1
+		if e.b > 0:
+			# несёт добычу фее и отдаёт, если есть куда
+			_choir_fly(e, px, py, dt, 250.0)
+			if Vector2(e.x - px, e.y - py).length() < 30.0:
+				var held: String = CHOIR_CARRY[clampi(int(e.b) - 1, 0, CHOIR_CARRY.size() - 1)]
+				if carry < int(CHOIR_CAP.get(held, 6)):
+					carry += 1
+					e.b = 0
+					add_score(12, px, py - 34, ALLY_COL)
+					burst(px, py, 8, ALLY_COL, 150, 1)
+					Sfx.pickup(combo)
+			continue
+		var target := _choir_nearest(e, CHOIR_CARRY, 230.0)
+		if target != null and carry < int(CHOIR_CAP.get(target.kind, 6)):
+			_choir_fly(e, target.x, target.y, dt, 240.0)
+			if Vector2(e.x - target.x, e.y - target.y).length() < target.r + 10.0:
+				target.dead = true
+				e.b = CHOIR_CARRY.find(target.kind) + 1
+				burst(target.x, target.y, 8, ALLY_COL, 150, 1)
+				ring(target.x, target.y, 24, ALLY_COL)
+				Sfx.pickup(combo)
+		else:
+			# строй рядом с феей: слева-сзади и справа-сзади
+			var slot := Vector2(px - facing * (52.0 + 26.0 * e.d), py + (38.0 if e.d == 0 else -42.0))
+			_choir_fly(e, slot.x, slot.y, dt, 215.0)
+
+	# --- хор: втроём громче — очки ×2, пока звучит
+	if near >= 2:
+		chorus_t = minf(1.0, chorus_t + dt * 0.5)
+	else:
+		chorus_t = maxf(0.0, chorus_t - dt * 0.8)
+	if chorus > 0.0:
+		chorus -= dt
+		if chorus <= 0.0:
+			chorus_t = 0.0
+	elif chorus_t >= 1.0:
+		chorus = 7.0
+		chorus_t = 0.0
+		ring(px, py, 130, Color("#f5e27a"))
+		burst(px, py, 26, Color("#f5e27a"), 260, 1)
+		pop_text(px, py - 52, I18n.t("Хор поёт! Очки ×2"), Color("#f5e27a"), 30)
+		Sfx.play("bloom")
+
+	# --- соперницы: уносят добычу, но боятся рывка
+	for e in ents:
+		if e.kind != "rival":
+			continue
+		if e.a > 0.0:
+			e.a -= dt
+			_choir_fly(e, e.x + (e.x - px) * 2.0, e.y - 70.0, dt, 320.0)
+			continue
+		if dash_t > 0.0 and Vector2(e.x - px, e.y - py).length() < 62.0:
+			# рывок пугает соперницу: роняет украденное и улетает
+			e.a = 2.2
+			choir_scared += 1
+			if e.b > 0:
+				var lost: String = CHOIR_LOOT[clampi(int(e.b) - 1, 0, CHOIR_LOOT.size() - 1)]
+				var q := spawn(lost, e.x, e.y, 11)
+				q.a = randf() * 6.0
+				if lost == "flake":
+					q.vy = randf_range(45, 70)
+				e.b = 0
+				rival_score = maxi(0, rival_score - 1)
+			add_score(20, e.x, e.y, RIVAL_COL)
+			pop_text(e.x, e.y - 30, I18n.t("Соперница испугалась!"), RIVAL_COL, 24)
+			burst(e.x, e.y, 14, RIVAL_COL, 200, 1)
+			Sfx.play("kill")
+			continue
+		if e.b > 0:
+			# уносит добычу за верхний край
+			_choir_fly(e, W * (0.1 + 0.8 * e.d), 100.0, dt, 260.0)
+			if e.y <= 118.0:
+				e.b = 0
+			continue
+		var target := _choir_nearest(e, CHOIR_LOOT, 420.0)
+		if target != null:
+			_choir_fly(e, target.x, target.y, dt, 235.0)
+			if Vector2(e.x - target.x, e.y - target.y).length() < target.r + 10.0:
+				target.dead = true
+				e.b = CHOIR_LOOT.find(target.kind) + 1
+				rival_score += 1
+				pop_text(target.x, target.y - 22, I18n.t("Соперница унесла!"), RIVAL_COL, 20)
+				burst(target.x, target.y, 10, RIVAL_COL, 170, 1)
+				Sfx.play("nocharge")
+		else:
+			# добычи нет — кружит вокруг феи и сбивает прицел
+			var ang := time * 0.9 + e.d * PI
+			_choir_fly(e, px + cos(ang) * 150.0, py + sin(ang) * 110.0, dt, 200.0)
 
 
 ## грибная глава: новый хоровод из 5 грибов
@@ -1670,6 +1939,18 @@ func _clear_chapter() -> void:
 	score += last_bonus
 	pop_text(W / 2, H / 2 - 20, I18n.t("Глава пройдена!"), ch()["main"], 46)
 	pop_text(W / 2, H / 2 + 30, I18n.t("Бонус +") + str(last_bonus), Sketch.INK, 28)
+	# «Хор фей»: подружки выручали, соперницы пугались — за это доплачиваем
+	if is_choir():
+		var choir_bonus := 200 + 120 * choir_scared + 80 * choir_saved
+		last_bonus += choir_bonus
+		score += choir_bonus
+		pop_text(W / 2, H / 2 + 96, I18n.t("Хор спелся: +%d") % choir_bonus, ALLY_COL, 24)
+	# «Звёздная стража»: доплата за целое сердце и за построенные башни
+	if is_guard():
+		var hold_bonus := guard_hp * 60 + guard_built * 15
+		last_bonus += hold_bonus
+		score += hold_bonus
+		pop_text(W / 2, H / 2 + 126, I18n.t("Поляна устояла: +%d") % hold_bonus, ch()["accent"], 24)
 	# «Гонка со временем»: отдельная награда за сэкономленные секунды
 	if is_race():
 		var left_bonus := maxi(0, int(round(time_left))) * 10
@@ -1680,6 +1961,466 @@ func _clear_chapter() -> void:
 		burst(randf_range(0, W), randf_range(0, H * 0.6), 20, ch()["main"] if i % 2 == 1 else ch()["accent"], 260, 4 if i % 2 == 1 else 1, 80)
 	shake = 10.0
 	Sfx.play("win")
+
+
+# ================================================================= стража
+
+## «Звёздная стража»: раскладка поля и отсчёт до первой волны
+func _init_guard() -> void:
+	guard_dew = Guard.START_DEW
+	guard_hp = Guard.HEART_HP
+	guard_queue = []
+	guard_gap = 1.0
+	guard_rest = Guard.WAVE_BREAK
+	guard_tool = 0
+	guard_built = 0
+	guard_kills = 0
+	guard_leaks = 0
+	guard_failed = false
+	guard_msg = I18n.t("Тап по кругу — поставить башню")
+	guard_msg_t = 6.0
+	progress = 0
+	_guard_layout()
+	px = clampf(W * 0.34, 30.0, W - 30.0)
+	py = clampf(gy() * 0.5, 120.0, gy() - 30.0)
+
+
+## тропа и места под башни в пикселях; пересчитывается при смене размера окна
+func _guard_layout() -> void:
+	guard_path = Guard.path(W, 104.0, gy() - 30.0)
+	guard_len = Guard.path_len(guard_path)
+	guard_spots = _guard_make_spots()
+	for e in ents:
+		if e.kind == "tower":
+			e.x = clampf(e.x, 30.0, W - 30.0)
+			e.y = clampf(e.y, 110.0, gy() - 30.0)
+		elif _guard_is_foe(e.kind):
+			var q := Guard.at(guard_path, e.d)
+			e.x = q.x
+			e.y = q.y
+
+
+## места под башни: вдоль тропы, но не на ней и не под панелью стройки
+func _guard_make_spots() -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	var bar := _guard_bar_zone()
+	var d := 52.0
+	while d < guard_len - 46.0:
+		var p := Guard.at(guard_path, d)
+		var q := Guard.at(guard_path, d + 4.0)
+		var dir := q - p
+		if dir.length_squared() > 0.0001:
+			dir = dir.normalized()
+			var nrm := Vector2(-dir.y, dir.x)
+			for side in [-1.0, 1.0]:
+				var s := p + nrm * (54.0 * side)
+				if s.x < 46.0 or s.x > W - 46.0 or s.y < 128.0 or s.y > gy() - 46.0:
+					continue
+				if bar.has_point(s):
+					continue
+				if Guard.dist_to_path(guard_path, s) < 40.0:
+					continue
+				var free := true
+				for o in out:
+					if o.distance_to(s) < 62.0:
+						free = false
+						break
+				if free:
+					out.append(s)
+		d += 74.0
+	return out
+
+
+## зона панели выбора башен — там места под башни не ставим
+func _guard_bar_zone() -> Rect2:
+	return Rect2(6.0, 138.0, 176.0, 78.0)
+
+
+## ближайший к точке круг для башни; -1 если мимо
+func _guard_spot_at(pos: Vector2) -> int:
+	var best := -1
+	var bd := 40.0
+	for i in guard_spots.size():
+		var dd: float = guard_spots[i].distance_to(pos)
+		if dd < bd:
+			bd = dd
+			best = i
+	return best
+
+
+## башня, стоящая в этом круге (ищем по близости — переживёт смену размера)
+func _guard_tower_at(pos: Vector2) -> Ent:
+	var best: Ent = null
+	var bd := 26.0
+	for e in ents:
+		if e.kind != "tower" or e.dead:
+			continue
+		var dd := Vector2(e.x - pos.x, e.y - pos.y).length()
+		if dd < bd:
+			bd = dd
+			best = e
+	return best
+
+
+## сколько теней сейчас на тропе
+func _guard_foes() -> int:
+	var n := 0
+	for e in ents:
+		if _guard_is_foe(e.kind) and not e.dead:
+			n += 1
+	return n
+
+
+func _guard_start_wave(n: int) -> void:
+	wave = n
+	guard_queue = Guard.wave_table(n)
+	guard_gap = 0.5
+	pop_text(W / 2, H / 2 - 46, I18n.t("Волна %d из %d") % [n, Guard.WAVES], ch()["main"], 32)
+	if n % 5 == 0:
+		pop_text(W / 2, H / 2 - 6, I18n.t("Идёт громадная тень!"), Color("#c8433b"), 24)
+	Sfx.play("click", 0.85)
+
+
+func _guard_spawn_foe(kind: String) -> void:
+	if guard_path.is_empty():
+		return
+	var p: Vector2 = guard_path[0]
+	var e := spawn(kind, p.x, p.y, Guard.enemy_radius(kind))
+	e.hp = Guard.enemy_hp(kind, wave)
+	e.vy = float(e.hp)
+	e.a = Guard.enemy_speed(kind, wave)
+	e.b = 0.0
+	e.d = 0.0
+	e.vx = 0.0
+
+
+## весь бой стражи: волны, тени, башни, снаряды и роса
+func _update_guard(dt: float) -> void:
+	guard_msg_t = maxf(0.0, guard_msg_t - dt)
+	if state != St.PLAY:
+		return
+	# ── волны ──
+	if guard_rest > 0.0:
+		guard_rest -= dt
+		if guard_rest <= 0.0:
+			_guard_start_wave(wave + 1)
+	elif guard_queue.size() > 0:
+		guard_gap -= dt
+		if guard_gap <= 0.0:
+			guard_gap = Guard.spawn_gap(wave)
+			_guard_spawn_foe(str(guard_queue.pop_front()))
+	elif _guard_foes() == 0:
+		if wave >= Guard.WAVES:
+			_guard_win()
+			return
+		progress = wave
+		guard_dew += Guard.WAVE_BONUS
+		guard_rest = Guard.WAVE_BREAK
+		pop_text(W / 2, H / 2 - 40, I18n.t("Волна %d отбита!") % wave, ch()["accent"], 30)
+		pop_text(W / 2, H / 2, I18n.t("Роса +%d") % Guard.WAVE_BONUS, Color("#5aa8e6"), 22)
+		Sfx.play("bloom")
+	# ── сущности ──
+	for e in ents.duplicate():
+		if e.dead:
+			continue
+		e.t += dt
+		match e.kind:
+			"foe", "fleet", "brute", "wight":
+				_update_guard_foe(e, dt)
+			"tower":
+				_update_guard_tower(e, dt)
+			"shot":
+				_update_guard_shot(e, dt)
+			"dew":
+				_update_guard_dew(e, dt)
+	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
+
+
+func _update_guard_foe(e: Ent, dt: float) -> void:
+	e.vx = maxf(0.0, e.vx - dt)
+	e.b = maxf(0.0, e.b - dt)
+	var spd: float = e.a * (0.45 if e.b > 0.0 else 1.0)
+	e.d += spd * dt
+	var p := Guard.at(guard_path, e.d)
+	e.x = p.x
+	e.y = p.y
+	# фея бьёт рывком: урон и откат назад по тропе
+	if dash_t > 0.0 and e.vx <= 0.0 and touching(e, -2.0):
+		e.vx = 0.4
+		e.d = maxf(0.0, e.d - 22.0)
+		_guard_hurt(e, 3, true)
+		if e.dead:
+			return
+	# тень дошла до сердца поляны
+	if e.d >= guard_len:
+		e.dead = true
+		guard_leaks += 1
+		guard_hp -= Guard.enemy_bite(e.kind)
+		shake = 12.0
+		flash = 0.3
+		burst(e.x, e.y, 18, Color("#8a5aa8"), 220.0, 1)
+		pop_text(e.x, e.y - 28, I18n.t("Тень прорвалась!"), Color("#c8433b"), 22)
+		Sfx.play("crash")
+		if guard_hp <= 0:
+			guard_hp = 0
+			_guard_lost()
+
+
+func _update_guard_tower(e: Ent, dt: float) -> void:
+	e.vx = maxf(0.0, e.vx - dt)
+	e.a -= dt
+	var ti := int(e.b)
+	var def := Guard.tower(ti)
+	var lv := int(e.hp)
+	if float(def.get("rate", 0.0)) <= 0.0:
+		# светлячок не стреляет, а держит круг света — тени в нём идут вдвое медленнее
+		var lit := false
+		for q in ents:
+			if _guard_is_foe(q.kind) and not q.dead and Vector2(q.x - e.x, q.y - e.y).length() <= e.r + q.r:
+				q.b = 0.5
+				lit = true
+		if e.a <= 0.0:
+			e.a = 1.0
+			if lit:
+				var c: Color = def.get("col", Color.WHITE)
+				ring(e.x, e.y, e.r, Color(c.r, c.g, c.b, 0.45))
+		return
+	if e.a > 0.0:
+		return
+	var target := _guard_target(e.x, e.y, e.r)
+	if target == null:
+		e.a = 0.1
+		return
+	e.a = float(def.get("rate", 0.7)) / (1.0 + 0.2 * (lv - 1))
+	e.vx = 0.16
+	_guard_shoot(e, target, ti, lv)
+
+
+## цель для башни — та тень, что дальше всех прошла по тропе
+func _guard_target(x: float, y: float, rng: float) -> Ent:
+	var best: Ent = null
+	for q in ents:
+		if not _guard_is_foe(q.kind) or q.dead:
+			continue
+		if Vector2(q.x - x, q.y - y).length() > rng + q.r:
+			continue
+		if best == null or q.d > best.d:
+			best = q
+	return best
+
+
+func _guard_shoot(t: Ent, target: Ent, ti: int, lv: int) -> void:
+	var def := Guard.tower(ti)
+	var from := Vector2(t.x, t.y - 12.0)
+	var s := spawn("shot", from.x, from.y, 5.0)
+	var dir := Vector2(target.x, target.y) - from
+	var l := maxf(1.0, dir.length())
+	var spd := 440.0
+	s.vx = dir.x / l * spd
+	s.vy = dir.y / l * spd
+	s.hp = int(def.get("dmg", 1)) + (lv - 1)
+	s.a = float(ti)
+	s.b = float(def.get("splash", 0.0)) * (1.0 + 0.15 * (lv - 1))
+	s.d = 1.5
+	Sfx.play("click", 1.7)
+
+
+func _update_guard_shot(e: Ent, dt: float) -> void:
+	e.d -= dt
+	e.x += e.vx * dt
+	e.y += e.vy * dt
+	if e.d <= 0.0 or e.x < -20.0 or e.x > W + 20.0 or e.y < -20.0 or e.y > H + 20.0:
+		e.dead = true
+		return
+	for q in ents:
+		if not _guard_is_foe(q.kind) or q.dead:
+			continue
+		if Vector2(q.x - e.x, q.y - e.y).length() <= q.r + 6.0:
+			_guard_shot_hit(e, q)
+			return
+
+
+func _guard_shot_hit(s: Ent, target: Ent) -> void:
+	s.dead = true
+	var c: Color = Guard.tower(int(s.a)).get("col", Color.WHITE)
+	burst(s.x, s.y, 6, c, 170.0, 1)
+	_guard_hurt(target, int(s.hp), false)
+	if s.b > 0.0:
+		ring(s.x, s.y, s.b, c)
+		for q in ents:
+			if q == target or not _guard_is_foe(q.kind) or q.dead:
+				continue
+			if Vector2(q.x - s.x, q.y - s.y).length() <= s.b:
+				_guard_hurt(q, maxi(1, int(s.hp) - 1), false)
+
+
+func _guard_hurt(e: Ent, dmg: int, by_fairy: bool) -> void:
+	if e.dead:
+		return
+	e.hp -= dmg
+	burst(e.x, e.y, 4, Color("#b58cff"), 150.0, 1)
+	if e.hp > 0:
+		return
+	e.dead = true
+	guard_kills += 1
+	add_score(Guard.enemy_score(e.kind), e.x, e.y, Color("#b58cff"))
+	burst(e.x, e.y, 16, Color("#6a5a8a"), 210.0, 1)
+	ring(e.x, e.y, 30.0, Color("#b58cff"))
+	Sfx.play("kill")
+	_guard_drop_dew(e.x, e.y, Guard.enemy_dew(e.kind))
+	if by_fairy:
+		pop_text(e.x, e.y - 26, I18n.t("Рывком!"), Color("#f5e27a"), 20)
+
+
+func _guard_drop_dew(x: float, y: float, amount: int) -> void:
+	var drops := clampi(amount, 1, 5)
+	var left := amount
+	for i in drops:
+		var take := left if i == drops - 1 else 1
+		left -= take
+		var e := spawn("dew", x + randf_range(-12.0, 12.0), y + randf_range(-10.0, 10.0), 7.0)
+		e.hp = take
+		e.a = 10.0
+		e.vx = randf_range(-46.0, 46.0)
+		e.vy = randf_range(-70.0, -20.0)
+
+
+func _update_guard_dew(e: Ent, dt: float) -> void:
+	e.a -= dt
+	if e.a <= 0.0:
+		e.dead = true
+		return
+	e.vy += 130.0 * dt
+	e.vx *= 0.98
+	e.x += e.vx * dt
+	e.y += e.vy * dt
+	if e.y > gy() - 12.0:
+		e.y = gy() - 12.0
+		e.vy = -e.vy * 0.3
+	var pull := 140.0 + 28.0 * int(upgrades["magnet"])
+	var dv := Vector2(px - e.x, py - e.y)
+	var l := dv.length()
+	if l < pull and l > 0.001:
+		e.x += dv.x / l * 190.0 * dt
+		e.y += dv.y / l * 190.0 * dt
+	if Vector2(px - e.x, py - e.y).length() < pr + 12.0:
+		e.dead = true
+		guard_dew += int(e.hp)
+		add_score(10, e.x, e.y, Color("#9fd3f5"))
+		burst(e.x, e.y, 6, Color("#9fd3f5"), 150.0, 1)
+		Sfx.pickup(combo)
+
+
+## клик/тач в режиме стражи: выбор башни, постройка или улучшение
+func _guard_tap(pos: Vector2) -> bool:
+	if not is_guard() or state != St.PLAY:
+		return false
+	var ti := _guard_tool_at(pos)
+	if ti >= 0:
+		guard_tool = ti
+		Sfx.play("click", 1.3)
+		return true
+	var si := _guard_spot_at(pos)
+	if si < 0:
+		return false
+	_guard_build(si)
+	return true
+
+
+func _guard_build(si: int) -> void:
+	if si < 0 or si >= guard_spots.size():
+		return
+	var p: Vector2 = guard_spots[si]
+	var t := _guard_tower_at(p)
+	if t == null:
+		var def := Guard.tower(guard_tool)
+		var cost := int(def.get("cost", 40))
+		if guard_dew < cost:
+			_guard_say(I18n.t("Росы не хватает: нужно %d") % cost, Color("#c8433b"))
+			return
+		guard_dew -= cost
+		var e := spawn("tower", p.x, p.y, 15.0)
+		e.b = float(guard_tool)
+		e.hp = 1
+		e.a = 0.0
+		e.r = float(def.get("range", 120.0))
+		e.vx = 0.3
+		guard_built += 1
+		var c: Color = def.get("col", Color.WHITE)
+		burst(p.x, p.y, 18, c, 200.0, 1)
+		ring(p.x, p.y, e.r, c)
+		pop_text(p.x, p.y - 30, String(Guard.tower_text(guard_tool).get("name", "")), c, 20)
+		Sfx.play("bloom")
+		return
+	var lv := int(t.hp)
+	var up := Guard.upgrade_cost(int(t.b), lv)
+	if up < 0:
+		_guard_say(I18n.t("Крепче некуда"), Sketch.INK)
+		return
+	if guard_dew < up:
+		_guard_say(I18n.t("Росы не хватает: нужно %d") % up, Color("#c8433b"))
+		return
+	guard_dew -= up
+	t.hp = lv + 1
+	t.r *= 1.12
+	t.a = 0.0
+	t.vx = 0.3
+	var c2: Color = Guard.tower(int(t.b)).get("col", Color.WHITE)
+	burst(p.x, p.y, 20, c2, 220.0, 1)
+	ring(p.x, p.y, t.r, c2)
+	pop_text(p.x, p.y - 30, I18n.t("Уровень %d") % int(t.hp), c2, 20)
+	Sfx.play("bloom")
+
+
+## построить там, где сейчас летит фея (для клавиатуры)
+func _guard_build_near() -> void:
+	var best := -1
+	var bd := 62.0
+	for i in guard_spots.size():
+		var dd: float = guard_spots[i].distance_to(Vector2(px, py))
+		if dd < bd:
+			bd = dd
+			best = i
+	if best < 0:
+		_guard_say(I18n.t("Подлетите к кругу для башни"), Sketch.INK)
+		return
+	_guard_build(best)
+
+
+func _guard_say(txt: String, col: Color) -> void:
+	guard_msg = txt
+	guard_msg_t = 2.4
+	pop_text(px, py - 46, txt, col, 20)
+	Sfx.play("click", 0.7)
+
+
+func _guard_win() -> void:
+	if state != St.PLAY:
+		return
+	progress = Guard.WAVES
+	for e in ents:
+		if _guard_is_foe(e.kind) or e.kind == "shot":
+			e.dead = true
+			burst(e.x, e.y, 10, Color("#b58cff"), 170.0, 1)
+	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
+	_clear_chapter()
+
+
+func _guard_lost() -> void:
+	if state != St.PLAY:
+		return
+	guard_failed = true
+	state = St.OVER
+	for e in ents:
+		if _guard_is_foe(e.kind) or e.kind == "shot":
+			e.dead = true
+	ents = ents.filter(func(x: Ent) -> bool: return not x.dead)
+	pop_text(W / 2, H / 2 - 20, I18n.t("Сердце поляны погасло!"), Color("#c8433b"), 44)
+	pop_text(W / 2, H / 2 + 30, I18n.t("Волн отбито: %d") % maxi(0, wave - 1), Sketch.INK, 26)
+	shake = 16.0
+	flash = 0.4
+	Sfx.play("over")
+	game_over.emit(score, ch_idx)
 
 
 # ================================================================= цикл
@@ -1930,6 +2671,8 @@ func _draw_world(ci: CanvasItem) -> void:
 
 ## подложка: таймер хоровода, подсказка к гнезду
 func _draw_under(ci: CanvasItem) -> void:
+	if is_guard():
+		_draw_guard_field(ci)
 	if cid() == "mushroom" and count("shroom") > 0:
 		var frac := maxf(0, ring_t / ring_max)
 		ci.draw_set_transform(ring_c, 0, Vector2(1, 0.8))
@@ -1982,6 +2725,28 @@ func _draw_firefly(ci: CanvasItem, x: float, y: float, seed: float) -> void:
 func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 	var t := time
 	match e.kind:
+		"ally", "rival":
+			# феи из других глав: подружки — водяная и садовая, соперницы — грибная и грозовая
+			var rival := e.kind == "rival"
+			var look: Dictionary = Chapters.get_ch(clampi(e.hp, 0, Chapters.count() - 1))
+			var dir := 1.0 if e.vx >= 0 else -1.0
+			var glow := 0.0
+			if not rival and chorus > 0.0:
+				glow = 0.55 + sin(t * 8 + e.seed) * 0.2
+			var sc := 0.82 if e.a > 0.0 else 0.95
+			if rival:
+				# соперницу видно издалека: тёмный след и отметка
+				ci.draw_circle(Vector2(e.x, e.y), 22, Color(RIVAL_COL, 0.14))
+				Sketch.text(ci, e.x, e.y - 36, "✦", RIVAL_COL, 18)
+			FairyDraw.fairy(ci, e.x, e.y, t + e.seed, look, dir, sc, glow)
+			if e.b > 0:
+				# добыча в руках
+				Sketch.s_circle(ci, e.x + dir * 13, e.y + 9, 5, e.seed + 3, RIVAL_COL if rival else Color("#f2c230"), 1.2)
+			if e.a > 0.0 and not rival:
+				# закружилась — звёздочки над головой
+				for i in 3:
+					var sa := t * 6 + i / 3.0 * TAU
+					Sketch.s_circle(ci, e.x + cos(sa) * 14, e.y - 26 + sin(sa) * 4, 3, e.seed + 40 + i, Color("#f5e27a"), 0.9)
 		"pollen":
 			ci.draw_circle(Vector2(e.x, e.y), 14 + sin(t * 5 + e.seed) * 2, Color(0.949, 0.761, 0.188, 0.25))
 			Sketch.s_circle(ci, e.x, e.y, 7, e.seed, Color("#f2c230"), 1.3)
@@ -2231,6 +2996,19 @@ func _draw_ent(ci: CanvasItem, e: Ent) -> void:
 		"orb":
 			ci.draw_circle(Vector2(e.x, e.y), e.r + 5, Color(0.314, 0.157, 0.47, 0.25))
 			Sketch.s_circle(ci, e.x, e.y, e.r, e.seed, Color("#4a2d70"), 1.4, Color(0.039, 0.024, 0.078, 0.9))
+		# ---------- «Звёздная стража» ----------
+		"foe", "fleet", "brute", "wight":
+			_draw_guard_foe(ci, e)
+		"tower":
+			_draw_guard_tower(ci, e)
+		"shot":
+			var sc: Color = Guard.tower(int(e.a)).get("col", Color.WHITE)
+			ci.draw_line(Vector2(e.x, e.y), Vector2(e.x - e.vx * 0.022, e.y - e.vy * 0.022), Color(sc.r, sc.g, sc.b, 0.55), 2.4, true)
+			ci.draw_circle(Vector2(e.x, e.y), 4.6, sc)
+		"dew":
+			var blink := 1.0 if (e.a > 2.0 or fmod(e.a, 0.5) > 0.25) else 0.35
+			Sketch.s_ellipse(ci, e.x, e.y, 5.5, 7.5, e.seed, Color(0.55, 0.82, 0.95, 0.85 * blink), 1.6)
+			ci.draw_circle(Vector2(e.x - 1.5, e.y - 2.0), 1.7, Color(1, 1, 1, 0.75 * blink))
 
 
 func _draw_particles(ci: CanvasItem) -> void:
@@ -2316,6 +3094,10 @@ func _draw_hud(ci: CanvasItem) -> void:
 			frac = 1.0 - float(maxi(0, boss.hp)) / float(maxhp)
 		else:
 			goal_txt = I18n.t("Волна %d  ·  Король собирается с силами…") % (boss_wave + 1)
+	elif is_guard():
+		goal_txt = I18n.t("Волна %d из %d") % [maxi(1, wave), Guard.WAVES]
+		frac = float(clampi(wave, 0, Guard.WAVES)) / Guard.WAVES
+		bar_col = Color("#8a5aa8")
 	elif is_race():
 		goal_txt = "%s: %d / %d" % [ch()["goal_label"], mini(progress, goal), goal]
 		frac = time_left / maxf(0.001, time_limit)
@@ -2335,12 +3117,25 @@ func _draw_hud(ci: CanvasItem) -> void:
 	if is_race():
 		var warn := time_left < 10.0
 		Sketch.text(ci, W - pad, pad + 14, I18n.t("%d с") % ceili(maxf(0.0, time_left)), Color("#c8433b") if warn else ink, 40, 1)
-	# «Марафон» и «Дуэль»: номер волны у правого края
+	# «Марафон» и «Дуэль»: номер волны у правого краю
 	if is_marathon() or is_duel():
 		Sketch.text(ci, W - pad, pad + 14, I18n.t("Волна %d") % maxi(1, wave), ink, 30, 1)
+	# «Хор фей»: сколько унесли соперницы и готов ли хор
+	if is_choir():
+		Sketch.text(ci, W - pad, pad + 46, I18n.t("Соперницы: %d") % rival_score, RIVAL_COL, 22, 1)
+		var hy := by + 58
+		if chorus > 0.0:
+			Sketch.text(ci, cx, hy, I18n.t("Хор поёт! ×2 · %d с") % ceili(chorus), Color("#f5e27a"), 24)
+		else:
+			var hw := 130.0
+			var hx := cx - hw / 2
+			Sketch.s_poly(ci, Sketch.v([hx, hy, hx + hw, hy, hx + hw, hy + 8, hx, hy + 8]), 310, true, null, 1.2, 0.5, stroke)
+			if chorus_t > 0.0:
+				Sketch.fill_poly(ci, Sketch.v([hx + 2, hy + 2, hx + 2 + (hw - 4) * chorus_t, hy + 2, hx + 2 + (hw - 4) * chorus_t, hy + 6, hx + 2, hy + 6]), Color("#f5e27a"))
+			Sketch.text(ci, cx, hy + 26, I18n.t("Летите втроём — запоёт хор"), Color(ALLY_COL, 0.9), 19)
 	# индикатор груза
 	var carry_max := {"flower": 6, "water": 5, "star": 3, "garden": 3, "hotel": 3}
-	if carry_max.has(cid()):
+	if carry_max.has(cid()) and not is_guard():
 		var cm: int = carry_max[cid()]
 		var col: Color = {"flower": Color("#f2c230"), "water": Color("#5aa8e6"), "star": Color("#f7d060"), "garden": Color("#f2a03a"), "hotel": Color("#c98a4b")}[cid()]
 		var label: String = {"flower": I18n.t("Пыльца"), "water": I18n.t("Вода"), "star": I18n.t("Заряд"), "garden": I18n.t("Солнце"), "hotel": I18n.t("Пыльца")}[cid()]
@@ -2360,8 +3155,147 @@ func _draw_hud(ci: CanvasItem) -> void:
 		var c := main
 		c.a = 0.6
 		ci.draw_arc(Vector2(px, py) + world_node.position, 26, -PI / 2, -PI / 2 + TAU * (1 - dash_cd / dash_cd_max()), 32, c, 2.0, true)
+	if is_guard():
+		_draw_guard_hud(ci, pad, ink)
 	if touch_mode and (state == St.PLAY or state == St.CLEAR):
 		_draw_touch(ci, light, ink, stroke)
+
+
+## прямоугольник кнопки выбора башни в панели стройки
+func _guard_tool_rect(i: int) -> Rect2:
+	return Rect2(16.0 + i * 52.0, 148.0, 46.0, 44.0)
+
+
+## какая кнопка башни нажата; -1 если мимо
+func _guard_tool_at(pos: Vector2) -> int:
+	for i in Guard.count():
+		if _guard_tool_rect(i).has_point(pos):
+			return i
+	return -1
+
+
+## тропа, круги для башен и сердце поляны — под сущностями
+func _draw_guard_field(ci: CanvasItem) -> void:
+	if guard_path.size() < 2:
+		return
+	var dirt := Color(0.353, 0.235, 0.157, 0.20)
+	var edge := Color(0.353, 0.235, 0.157, 0.42)
+	for i in guard_path.size() - 1:
+		ci.draw_line(guard_path[i], guard_path[i + 1], dirt, 36.0, true)
+	for i in guard_path.size() - 1:
+		ci.draw_dashed_line(guard_path[i], guard_path[i + 1], edge, 1.8, 11.0)
+	var afford := guard_dew >= int(Guard.tower(guard_tool).get("cost", 40))
+	var a := 0.55 if afford else 0.26
+	for p in guard_spots:
+		if _guard_tower_at(p) != null:
+			continue
+		ci.draw_arc(p, 16.0, 0, TAU, 22, Color(0.353, 0.235, 0.157, a), 2.0, true)
+		ci.draw_line(p + Vector2(-7, 0), p + Vector2(7, 0), Color(0.353, 0.235, 0.157, a), 2.0, true)
+		ci.draw_line(p + Vector2(0, -7), p + Vector2(0, 7), Color(0.353, 0.235, 0.157, a), 2.0, true)
+	_draw_guard_heart(ci, guard_path[guard_path.size() - 1])
+
+
+## сердце поляны: цветок, который гаснет с каждым прорывом
+func _draw_guard_heart(ci: CanvasItem, p: Vector2) -> void:
+	var pulse := 1.0 + sin(time * 3.0) * 0.06
+	var frac := clampf(float(guard_hp) / Guard.HEART_HP, 0.0, 1.0)
+	var col := Color("#e86a92") if frac > 0.35 else Color("#c8433b")
+	for i in 6:
+		var a := i / 6.0 * TAU + time * 0.5
+		Sketch.s_ellipse(ci, p.x + cos(a) * 17 * pulse, p.y + sin(a) * 17 * pulse, 11, 7, 940 + i, Color(col.r, col.g, col.b, 0.5), 2.0)
+	Sketch.s_circle(ci, p.x, p.y, 12 * pulse, 950, col, 2.4)
+	var w := 62.0
+	ci.draw_rect(Rect2(p.x - w / 2.0, p.y + 28, w, 7), Color(0.353, 0.235, 0.157, 0.3), true)
+	ci.draw_rect(Rect2(p.x - w / 2.0, p.y + 28, w * frac, 7), col, true)
+
+
+## тень на тропе: лохмотья, глаза и полоска здоровья
+func _draw_guard_foe(ci: CanvasItem, e: Ent) -> void:
+	var r := e.r
+	var wob := sin(e.t * 6.0 + e.seed) * 2.0
+	var body := Color("#5a4a7a")
+	match e.kind:
+		"fleet":
+			body = Color("#7a6aaa")
+		"brute":
+			body = Color("#3a2a4a")
+		"wight":
+			body = Color("#2a1a3a")
+	if e.vx > 0.2:
+		body = Color(1, 1, 1, 0.92)
+	ci.draw_circle(Vector2(e.x, e.y + r * 0.85), r * 0.75, Color(0, 0, 0, 0.12))
+	for i in 5:
+		var a := e.seed + i * 1.3 + e.t * 2.0
+		var xx := e.x + cos(a) * r * 0.7
+		ci.draw_line(Vector2(xx, e.y + r * 0.2), Vector2(xx + sin(a) * 3.0, e.y + r * 1.15 + wob), Color(body.r, body.g, body.b, 0.55), 2.0, true)
+	Sketch.s_circle(ci, e.x, e.y + wob * 0.4, r, e.seed, body, 2.2)
+	var eye := Color("#f5e27a") if e.b <= 0.0 else Color("#9fd3f5")
+	ci.draw_circle(Vector2(e.x - r * 0.32, e.y - r * 0.15 + wob * 0.4), maxf(1.8, r * 0.14), eye)
+	ci.draw_circle(Vector2(e.x + r * 0.32, e.y - r * 0.15 + wob * 0.4), maxf(1.8, r * 0.14), eye)
+	var maxhp := maxf(1.0, e.vy)
+	if float(e.hp) < maxhp:
+		var w := r * 2.0
+		var f := clampf(float(e.hp) / maxhp, 0.0, 1.0)
+		ci.draw_rect(Rect2(e.x - w / 2.0, e.y - r - 10, w, 3.5), Color(0, 0, 0, 0.3), true)
+		ci.draw_rect(Rect2(e.x - w / 2.0, e.y - r - 10, w * f, 3.5), Color("#c8433b"), true)
+	if e.b > 0.0:
+		Sketch.s_circle(ci, e.x, e.y, r + 5.0, e.seed + 40, null, 1.3, Color(0.62, 0.85, 0.95, 0.55))
+
+
+## башня-цвет: колокольчик, светлячок или шиповник — по выбранному типу
+func _draw_guard_tower(ci: CanvasItem, e: Ent) -> void:
+	var ti := int(e.b)
+	var def := Guard.tower(ti)
+	var c: Color = def.get("col", Color.WHITE)
+	var lv := int(e.hp)
+	var kick := e.vx * 26.0
+	var pulse := 1.0 + sin(time * 2.0 + e.seed) * 0.05
+	ci.draw_line(Vector2(e.x, e.y + 14), Vector2(e.x, e.y - 4.0 + kick), Color(0.42, 0.62, 0.36), 3.0, true)
+	Sketch.s_ellipse(ci, e.x, e.y + 15, 14, 6, e.seed, Color(0.353, 0.235, 0.157, 0.45), 1.6)
+	match ti:
+		0:
+			for i in 3:
+				var a := -PI / 2.0 + (i - 1) * 0.55 + sin(time * 2.0 + e.seed) * 0.06
+				Sketch.s_ellipse(ci, e.x + cos(a) * 6.0 * pulse, e.y - 9.0 + sin(a) * 5.0 + kick, 6, 9, e.seed + i * 30, Color(c.r, c.g, c.b, 0.9), 2.0)
+		1:
+			var gl := 0.55 + 0.45 * sin(time * 4.0 + e.seed)
+			ci.draw_circle(Vector2(e.x, e.y - 10 + kick), 12.0, Color(c.r, c.g, c.b, 0.16 * gl))
+			Sketch.s_ellipse(ci, e.x, e.y - 10 + kick, 7, 9, e.seed + 9, Color(c.r, c.g, c.b, 0.85), 2.0)
+			ci.draw_circle(Vector2(e.x + cos(time * 3.0 + e.seed) * 5.0, e.y - 10 + sin(time * 3.0 + e.seed) * 5.0 + kick), 2.6, c)
+		_:
+			for i in 6:
+				var a2 := i / 6.0 * TAU + e.seed * 0.3
+				ci.draw_line(Vector2(e.x, e.y - 9 + kick), Vector2(e.x + cos(a2) * 12.0, e.y - 9 + sin(a2) * 12.0 + kick), Color(c.r, c.g, c.b, 0.85), 2.2, true)
+			Sketch.s_circle(ci, e.x, e.y - 9 + kick, 7 * pulse, e.seed + 11, c, 2.2)
+	for i in lv - 1:
+		Sketch.s_ellipse(ci, e.x - 9 + i * 18, e.y + 7, 8, 4, e.seed + 60 + i * 20, Color(0.42, 0.62, 0.36, 0.9), 1.5)
+	if ti == guard_tool:
+		ci.draw_arc(Vector2(e.x, e.y), e.r, 0, TAU, 44, Color(c.r, c.g, c.b, 0.20), 1.4, true)
+
+
+## панель стройки: сердце поляны, роса и три башни на выбор
+func _draw_guard_hud(ci: CanvasItem, pad: float, ink: Color) -> void:
+	var hcol := Color("#e86a92") if guard_hp > 3 else Color("#c8433b")
+	Sketch.text(ci, W - pad, pad + 14, I18n.t("Сердце %d") % guard_hp, hcol, 30, 1)
+	Sketch.text(ci, W - pad, pad + 48, I18n.t("Роса %d") % guard_dew, Color("#5aa8e6"), 24, 1)
+	for i in Guard.count():
+		var rc := _guard_tool_rect(i)
+		var def := Guard.tower_text(i)
+		var c: Color = def.get("col", Color.WHITE)
+		var sel := i == guard_tool
+		var afford := guard_dew >= int(def.get("cost", 40))
+		ci.draw_rect(rc, Color(c.r, c.g, c.b, 0.32 if sel else 0.12), true)
+		ci.draw_rect(rc, c if sel else Color(c.r, c.g, c.b, 0.45), false, 2.4 if sel else 1.4)
+		Sketch.text(ci, rc.position.x + rc.size.x / 2.0, rc.position.y + 18, String(def.get("icon", "✿")), c if afford else Color(c.r, c.g, c.b, 0.38), 22, 0)
+		Sketch.text(ci, rc.position.x + rc.size.x / 2.0, rc.position.y + 37, str(int(def.get("cost", 0))), Color("#5aa8e6") if afford else Color("#c8433b"), 15, 0)
+		Sketch.text(ci, rc.position.x + rc.size.x - 4, rc.position.y + 10, str(i + 1), Color(ink.r, ink.g, ink.b, 0.45), 12, 1)
+	var sd := Guard.tower_text(guard_tool)
+	Sketch.text(ci, pad, 208, I18n.t("Ставим: %s") % String(sd.get("name", "")), ink, 17, -1)
+	# подсказка над кнопкой рывка, чтобы не наезжать на неё
+	if guard_msg_t > 0.0 and guard_msg != "":
+		Sketch.text(ci, W / 2.0, H - 152, guard_msg, Color(ink.r, ink.g, ink.b, 0.85), 18, 0)
+	elif guard_rest > 0.0 and state == St.PLAY:
+		Sketch.text(ci, W / 2.0, H - 152, I18n.t("До волны %d: %d с — стройте!") % [wave + 1, ceili(guard_rest)], Color("#f2c230"), 20, 0)
 
 
 func _draw_touch(ci: CanvasItem, _light: bool, ink: Color, stroke: Color) -> void:

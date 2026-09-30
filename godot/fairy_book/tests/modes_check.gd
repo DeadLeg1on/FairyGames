@@ -1,6 +1,6 @@
 extends Node
-## Проверка новых режимов и лавки: гонка, марафон, дуэль, тихий полёт,
-## ежедневный вызов, наряды и сад фей. Запуск:
+## Проверка новых режимов и лавки: гонка, марафон, дуэль, тихий полёт, хор фей,
+## звёздная стража, ежедневный вызов, наряды и сад фей. Запуск:
 ## godot --headless --path godot/fairy_book --fixed-fps 60 res://tests/modes_check.tscn
 
 var fails := 0
@@ -18,6 +18,8 @@ func _ready() -> void:
 	_check_marathon(g)
 	_check_duel(g)
 	_check_zen(g)
+	_check_choir(g)
+	_check_guard(g)
 	_check_daily()
 	_check_shop()
 	_check_i18n()
@@ -112,6 +114,262 @@ func _check_zen(g) -> void:
 	g.inv = 0.0
 	ok(g.damage() == false, "тихий полёт: урона нет")
 	ok(g.state == g.St.PLAY, "тихий полёт: забег продолжается")
+
+
+## первая живая сущность вида (для «Хора фей»)
+func _first(g, kind: String):
+	for e in g.ents:
+		if e.kind == kind and not e.dead:
+			return e
+	return null
+
+
+## «Хор фей»: на время проверки убираем тех, кто может перехватить добычу —
+## остальных подружек уводим в другой конец поля, лишних соперниц отправляем удирать
+func _choir_quiet(g, keep_ally, keep_rival) -> void:
+	for e in g.ents:
+		if e.kind == "ally" and e != keep_ally:
+			e.x = 24.0
+			e.y = g.gy() - 30.0
+			e.b = 0
+			e.a = 0.0
+		elif e.kind == "rival" and e != keep_rival:
+			e.a = 6.0
+			e.b = 0
+
+
+## «Хор фей»: подружки помогают и прикрывают, соперницы воруют, рывок их пугает
+func _check_choir(g) -> void:
+	ok(Modes.has("choir"), "хор: режим есть в каталоге")
+	ok(Modes.flag("choir", "choir"), "хор: у режима свой флаг")
+	ok(Modes.pick("choir") and Modes.goal("choir"), "хор: главу выбираем и цель у неё есть")
+	g.new_run("choir")
+	g.start_chapter(0)
+	ok(g.count("ally") == 2, "хор: две подружки прилетели (%d)" % g.count("ally"))
+	ok(g.count("rival") == 2, "хор: две соперницы прилетели (%d)" % g.count("rival"))
+
+	# --- подружка подбирает добычу и отдаёт фее
+	var ally = _first(g, "ally")
+	ok(ally != null, "хор: подружка на поле")
+	if ally == null:
+		return
+	var pol = g.spawn("pollen", ally.x + 8, ally.y, 9)
+	ally.b = 0
+	_choir_quiet(g, ally, null)
+	g.px = 40
+	g.py = g.gy() - 40
+	_step(g, 40)
+	ok(pol.dead, "хор: подружка подобрала пыльцу с поля")
+	ok(ally.b > 0, "хор: подружка несёт добычу фее (b=%d)" % int(ally.b))
+	g.carry = 0
+	g.px = ally.x
+	g.py = ally.y
+	_step(g, 30)
+	ok(g.carry >= 1, "хор: добыча дошла до феи (carry=%d)" % g.carry)
+
+	# --- соперница уносит то же самое
+	var rival = _first(g, "rival")
+	ok(rival != null, "хор: соперница на поле")
+	if rival == null:
+		return
+	rival.a = 0
+	rival.b = 0
+	var loot = g.spawn("pollen", rival.x + 8, rival.y, 9)
+	_choir_quiet(g, null, rival)
+	g.px = 40
+	g.py = g.gy() - 40
+	var stolen := g.rival_score
+	_step(g, 40)
+	ok(loot.dead, "хор: соперница забрала пыльцу")
+	ok(g.rival_score > stolen, "хор: счёт соперниц вырос (%d → %d)" % [stolen, g.rival_score])
+
+	# --- рывок пугает соперницу, и она бросает украденное
+	rival.b = 1
+	rival.a = 0
+	_choir_quiet(g, null, rival)
+	g.px = rival.x
+	g.py = rival.y
+	g.dash_t = 0.2
+	var scared := g.choir_scared
+	var had := g.rival_score
+	_step(g, 2)
+	ok(g.choir_scared > scared, "хор: рывок спугнул соперницу (%d)" % g.choir_scared)
+	ok(g.rival_score < had, "хор: украденное вернули (%d → %d)" % [had, g.rival_score])
+	ok(rival.b == 0, "хор: соперница летит налегке")
+
+	# --- подружка закрывает фею от удара
+	g.new_run("choir")
+	g.start_chapter(0)
+	var guard = _first(g, "ally")
+	guard.a = 0
+	g.px = guard.x + 20
+	g.py = guard.y
+	g.inv = 0.0
+	g.dash_t = 0.0
+	var hearts := g.hearts
+	ok(g.damage(), "хор: удар принят")
+	ok(g.hearts == hearts, "хор: сердце цело — прикрыла подружка (♥ %d)" % g.hearts)
+	ok(guard.a > 0.0, "хор: подружка закружилась (%.1f с)" % guard.a)
+	ok(g.choir_saved == 1, "хор: выручила один раз (%d)" % g.choir_saved)
+
+	# --- хор: втроём очки удваиваются
+	g.chorus = 0.0
+	g.chorus_t = 0.0
+	ok(g.score_mult() == 1, "хор: молча очки ×1")
+	g.chorus = 5.0
+	ok(g.score_mult() == 2, "хор: во время пения очки ×2")
+	g.chorus = 0.0
+	for e in g.ents:
+		if e.kind == "ally":
+			e.a = 0.0
+			e.x = g.px + 30
+			e.y = g.py
+	g._update_choir(0.1)
+	ok(g.chorus_t > 0.0, "хор: рядом с подружками копится запев (%.2f)" % g.chorus_t)
+
+	# --- бонус в конце главы
+	g.progress = int(g.ch()["goal"])
+	g.choir_scared = 2
+	g.choir_saved = 1
+	g._clear_chapter()
+	ok(g.last_bonus >= 520, "хор: бонус за подружек и испуганных соперниц (%d)" % g.last_bonus)
+	ok(g.state == g.St.CLEAR, "хор: глава пройдена")
+
+
+func _first_guard_foe(g):
+	for e in g.ents:
+		if g._guard_is_foe(e.kind) and not e.dead:
+			return e
+	return null
+
+
+func _check_guard(g) -> void:
+	ok(Modes.has("guard"), "стража: режим есть в каталоге")
+	ok(not Modes.pick("guard") and not Modes.story("guard"), "стража: главу не выбираем и сказку не идём")
+	ok(Guard.WAVES == 10 and Guard.HEART_HP > 0, "стража: десять волн и сердце на %d ударов" % Guard.HEART_HP)
+
+	# --- состав волн
+	ok(Guard.wave_table(1).size() >= 6, "стража: в первой волне есть тени (%d)" % Guard.wave_table(1).size())
+	ok(Guard.wave_table(5).has("wight") and Guard.wave_table(10).has("wight"), "стража: каждая пятая волна с громадной тенью")
+	ok(not Guard.wave_table(3).has("wight"), "стража: в третьей волне громадной тени нет")
+	ok(Guard.enemy_hp("foe", 10) > Guard.enemy_hp("foe", 1), "стража: тени крепчают от волны к волне")
+	ok(Guard.upgrade_cost(0, Guard.MAX_LEVEL) < 0, "стража: выше последнего уровня башню не улучшить")
+	ok(float(Guard.tower(1).get("slow", 0.0)) > 0.0, "стража: светлячок замедляет тени")
+
+	g.new_run("guard")
+	g.start_chapter(Modes.GUARD_CHAPTER)
+	ok(g.is_guard() and not g.needs_goal(), "стража: цель главы не нужна — считаем волны")
+	ok(g.guard_path.size() >= 2 and g.guard_len > 0.0, "стража: тропа построена (%d точек, %.0f px)" % [g.guard_path.size(), g.guard_len])
+	ok(g.guard_spots.size() >= 4, "стража: есть места под башни (%d)" % g.guard_spots.size())
+	ok(g.guard_dew == Guard.START_DEW and g.guard_hp == Guard.HEART_HP, "стража: роса и сердце на старте")
+	var on_path := 0
+	for p in g.guard_spots:
+		if Guard.dist_to_path(g.guard_path, p) < 34.0:
+			on_path += 1
+	ok(on_path == 0, "стража: ни один круг не стоит на тропе (%d)" % on_path)
+
+	# --- волна приходит после отсчёта
+	g.guard_rest = 0.02
+	_step(g, 4)
+	ok(g.wave == 1, "стража: первая волна началась (%d)" % g.wave)
+	_step(g, 120)
+	ok(g._guard_foes() > 0, "стража: тени вышли на тропу (%d)" % g._guard_foes())
+
+	# --- тень идёт по тропе
+	var foe = _first_guard_foe(g)
+	ok(foe != null, "стража: тень на поле")
+	if foe == null:
+		return
+	var d0: float = foe.d
+	_step(g, 30)
+	ok(foe.dead or foe.d > d0, "стража: тень продвинулась по тропе (%.0f → %.0f)" % [d0, foe.d])
+
+	# --- башня ставится за росу и стреляет
+	g.guard_dew = 500
+	g._guard_tap(g.guard_spots[0])
+	ok(g.count("tower") == 1, "стража: башня поставлена на круг")
+	ok(g.guard_dew < 500, "стража: роса списана (%d)" % g.guard_dew)
+	var tw = _first(g, "tower")
+	ok(tw != null, "стража: башня на поле")
+	if tw != null:
+		var lv0 := int(tw.hp)
+		g._guard_tap(g.guard_spots[0])
+		ok(int(tw.hp) > lv0, "стража: повторный тап улучшает башню (%d → %d)" % [lv0, int(tw.hp)])
+	foe = _first_guard_foe(g)
+	if foe != null:
+		var best := 0
+		var bd := INF
+		for i in g.guard_spots.size():
+			var dd: float = g.guard_spots[i].distance_to(Vector2(foe.x, foe.y))
+			if dd < bd:
+				bd = dd
+				best = i
+		g._guard_tap(g.guard_spots[best])
+		var hp0: int = foe.hp
+		var kills0: int = g.guard_kills
+		_step(g, 150)
+		ok(foe.dead or foe.hp < hp0 or g.guard_kills > kills0, "стража: башни бьют теней (♥ %d → %d, развеяно %d)" % [hp0, foe.hp, g.guard_kills])
+
+	# --- роса падает с тени и собирается феей
+	g.guard_dew = 0
+	foe = _first_guard_foe(g)
+	if foe != null:
+		g.px = foe.x
+		g.py = foe.y
+		g._guard_hurt(foe, 999, false)
+		ok(g.count("dew") > 0, "стража: с тени упала роса (%d)" % g.count("dew"))
+		_step(g, 30)
+		ok(g.guard_dew > 0, "стража: фея собрала росу (%d)" % g.guard_dew)
+
+	# --- прорыв к сердцу (если всех теней уже развеяли — выпускаем свою)
+	g.guard_hp = Guard.HEART_HP
+	g.guard_leaks = 0
+	foe = _first_guard_foe(g)
+	if foe == null:
+		g._guard_spawn_foe("foe")
+		foe = _first_guard_foe(g)
+	ok(foe != null, "стража: есть тень для проверки прорыва")
+	if foe != null:
+		foe.d = g.guard_len + 1.0
+		var heart0: int = g.guard_hp
+		_step(g, 4)
+		ok(g.guard_hp < heart0, "стража: прорвавшаяся тень бьёт по сердцу (%d → %d)" % [heart0, g.guard_hp])
+		ok(g.guard_leaks > 0, "стража: прорыв посчитан (%d)" % g.guard_leaks)
+
+	# --- панель выбора башни
+	var rc: Rect2 = g._guard_tool_rect(2)
+	ok(g._guard_tap(rc.get_center()), "стража: тап по панели выбора башни")
+	ok(g.guard_tool == 2, "стража: выбран светлячок (%d)" % g.guard_tool)
+
+	# --- сердце погасло — забег окончен
+	g.guard_hp = 1
+	foe = _first_guard_foe(g)
+	if foe == null:
+		g._guard_spawn_foe("foe")
+		foe = _first_guard_foe(g)
+	if foe != null:
+		foe.d = g.guard_len + 1.0
+		_step(g, 4)
+	ok(g.guard_failed and g.state == g.St.OVER, "стража: сердце погасло — забег окончен")
+
+	# --- второй шанс за рекламу чинит сердце
+	g.revive()
+	ok(g.state == g.St.PLAY and g.guard_hp == Guard.HEART_HP, "стража: второй шанс чинит сердце (%d)" % g.guard_hp)
+
+	# --- десять волн отбиты — победа
+	g.new_run("guard")
+	g.start_chapter(Modes.GUARD_CHAPTER)
+	g.wave = Guard.WAVES
+	g.guard_queue = []
+	g.guard_rest = 0.0
+	for e in g.ents:
+		if g._guard_is_foe(e.kind):
+			e.dead = true
+	g.ents = g.ents.filter(func(x) -> bool: return not x.dead)
+	_step(g, 4)
+	ok(g.state == g.St.CLEAR, "стража: десять волн отбиты — поляна спасена")
+	ok(g.progress == Guard.WAVES, "стража: прогресс равен числу волн (%d)" % g.progress)
+	ok(g.last_bonus >= Guard.HEART_HP * 60, "стража: бонус за целое сердце (%d)" % g.last_bonus)
 
 
 func _check_daily() -> void:

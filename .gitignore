@@ -1,3 +1,6 @@
+# зависимости и сборка веб-версии
+node_modules/
+dist/
 
 # wav-рендер тем (создаётся прогоном тестов)
 godot/fairy_book/music_export/

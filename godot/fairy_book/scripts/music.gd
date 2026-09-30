@@ -22,8 +22,11 @@ static var _tri: PackedFloat32Array
 ## текущий буфер сборки: голоса пишут в него напрямую (см. _voice)
 static var _buf := PackedFloat32Array()
 
+## громкость музыки по умолчанию (0..1) — такая же, как у звуков
+const DEFAULT_VOLUME := 0.8
+
 var enabled := true
-var volume := 0.8
+var volume := DEFAULT_VOLUME
 var suspended := false
 var track := ""
 
@@ -149,6 +152,10 @@ func _apply(fade: bool = false) -> void:
 	if _player.volume_db == target:
 		return
 	if not fade:
+		# незавершённый фейд перетёр бы новое значение обратно
+		if _fade != null and _fade.is_valid():
+			_fade.kill()
+		_fade = null
 		_player.volume_db = target
 		return
 	if _fade != null and _fade.is_valid():

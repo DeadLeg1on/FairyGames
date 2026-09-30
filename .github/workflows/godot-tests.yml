@@ -92,6 +92,14 @@ jobs:
           echo $? > music.status
           tail -40 music.log
 
+      - name: Тесты (громкость музыки и звуков)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 180 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/audio_check.tscn > audio.log 2>&1
+          echo $? > audio.status
+          tail -40 audio.log
+
       # темы рендерятся в wav: музыку можно послушать, не запуская игру
       - name: Рендер тем в wav для прослушивания
         if: steps.import.outputs.compile == '1'
@@ -110,6 +118,14 @@ jobs:
           timeout 180 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/hotel_check.tscn > hotel.log 2>&1
           echo $? > hotel.status
           tail -30 hotel.log
+
+      - name: Тесты (реклама по площадкам: веб, Android, локальная сборка)
+        if: steps.import.outputs.compile == '1'
+        run: |
+          set +e
+          timeout 150 ./godot-bin --headless --path godot/fairy_book --fixed-fps 60 res://tests/ads_check.tscn > ads.log 2>&1
+          echo $? > ads.status
+          tail -30 ads.log
 
       - name: Тесты (бесконечный режим и «Одно перо»)
         if: steps.import.outputs.compile == '1'
@@ -140,8 +156,8 @@ jobs:
 
           PROBLEM = re.compile(r'(^FAIL |ERROR:|SCRIPT ERROR|Parse Error|error while loading|Cannot |Invalid |Permission denied|Is a directory|не найдено)')
           # только эти сцены печатают итоговую строку FAILS
-          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log', 'music.log')
-          TESTS = ('modes.log', 'ui.log', 'music.log', 'hotel.log', 'endless.log', 'autoplay.log')
+          FAILS_TESTS = ('modes.log', 'ui.log', 'hotel.log', 'music.log', 'audio.log', 'ads.log')
+          TESTS = ('modes.log', 'ui.log', 'music.log', 'audio.log', 'hotel.log', 'ads.log', 'endless.log', 'autoplay.log')
           errors, fails, ok_count = [], [], {}
 
           for name in ('version.log', 'import.log') + TESTS:
@@ -185,7 +201,7 @@ jobs:
               sys.exit(1)
           print('::notice title=Godot-тесты пройдены::OK-проверок: %s' % ', '.join('%s=%d' % (k, v) for k, v in ok_count.items()))
           # хвосты сцен без строки FAILS — чтобы результат был виден в аннотации
-          for name in ('music.log', 'hotel.log', 'endless.log', 'autoplay.log'):
+          for name in ('music.log', 'audio.log', 'hotel.log', 'endless.log', 'autoplay.log'):
               if os.path.exists(name):
                   tail = '\n'.join(open(name, encoding='utf-8', errors='replace').read().splitlines()[-12:])
                   print('::notice title=%s::%s' % (name, esc(tail[:4000])))

@@ -56,6 +56,7 @@ var granted_score := 0
 var last_pollen := 0
 var doubled := false
 var shop_back := "menu"
+var settings_back := "menu"
 var shop_flash := ""
 var small := false
 ## наряды и мета-прогресс
@@ -86,6 +87,8 @@ var hotel_theme_for := -1
 var hotel_proc_for := -1
 var hotel_sig := ""
 var hotel_clock := 0.0
+## сцена отеля: узел живёт дольше перестроек окна, иначе феи на ней «моргают»
+var hotel_view: HotelView = null
 var hotel_proc_slot := 0
 var seen_t := 0.0
 
@@ -165,19 +168,19 @@ func _ready() -> void:
 	ad_hint.visible = false
 	ad_hint.z_index = 8
 	ui.add_child(ad_hint)
-	Yandex.platform_pause.connect(_pause)
+	Ads.platform_pause.connect(_pause)
 	get_viewport().size_changed.connect(_on_resize)
 	game.preview(0)
 	_go("menu" if lang_chosen else "lang")
 	await get_tree().process_frame
-	Yandex.mark_ready()
+	Ads.mark_ready()
 	# «реклама при возвращении»: игрок отсутствовал больше 10 минут —
 	# показываем один полноэкранный ролик в меню (платформа это разрешает)
 	if return_after_break:
 		await get_tree().create_timer(3.0).timeout
 		if screen == "menu" and not ad_busy:
 			_set_busy(true)
-			await Yandex.show_fullscreen()
+			await Ads.show_fullscreen()
 			_set_busy(false)
 
 
@@ -218,15 +221,16 @@ func _go(s: String) -> void:
 	screen = s
 	_sync_music()
 	if s == "play":
-		Yandex.gameplay_start()
+		Ads.gameplay_start()
 	else:
-		Yandex.gameplay_stop()
+		Ads.gameplay_stop()
 	pause_btn.visible = s == "play"
-	# липкий баннер живёт только вне геймплея
-	if s == "play" or s == "paused" or s == "lang":
-		Yandex.hide_banner()
+	# липкий баннер живёт только вне геймплея; настройки открываются и из паузы,
+	# поэтому баннер там тоже скрыт — иначе он мигает при каждом входе в паузу
+	if s == "play" or s == "paused" or s == "lang" or s == "settings":
+		Ads.hide_banner()
 	else:
-		Yandex.show_banner()
+		Ads.show_banner()
 	_build_overlay()
 
 
@@ -266,7 +270,7 @@ func _with_ad(action: Callable) -> void:
 	if ad_busy:
 		return
 	_set_busy(true)
-	var shown: bool = await Yandex.show_fullscreen()
+	var shown: bool = await Ads.show_fullscreen()
 	_set_busy(false)
 	if shown:
 		Shop.add_counter("fullscreen_total")
@@ -277,7 +281,7 @@ func _with_ad(action: Callable) -> void:
 func _interstitial(context: String, action: Callable) -> void:
 	ad_counts[context] = int(ad_counts.get(context, 0)) + 1
 	var every := int(AD_EVERY.get(context, 1))
-	if every <= 0 or int(ad_counts[context]) % every != 0 or not Yandex.interstitial_ok():
+	if every <= 0 or int(ad_counts[context]) % every != 0 or not Ads.interstitial_ok():
 		action.call()
 		return
 	_with_ad(action)
@@ -286,7 +290,7 @@ func _interstitial(context: String, action: Callable) -> void:
 ## реклама с вознаграждением: true — награда засчитана
 func _rewarded(tag: String) -> bool:
 	_set_busy(true)
-	var ok: bool = await Yandex.show_rewarded(tag)
+	var ok: bool = await Ads.show_rewarded(tag)
 	_set_busy(false)
 	if ok:
 		Shop.add_counter("rewarded_" + tag)
@@ -377,6 +381,12 @@ func _choose_mode(m: String) -> void:
 		game.preview(Modes.NO_BOSS_CHAPTER)
 		story_idx = Modes.NO_BOSS_CHAPTER
 		_go("story")
+	elif m == "guard":
+		# «Звёздная стража»: поляна одна и та же, главу выбирать не нужно
+		game.new_run(m)
+		game.preview(Modes.GUARD_CHAPTER)
+		story_idx = Modes.GUARD_CHAPTER
+		_go("story")
 	elif m == "daily":
 		# глава дня выбирается жребием от даты
 		story_idx = Modes.daily_chapter(unlocked)
@@ -399,7 +409,7 @@ func _single_run() -> bool:
 
 ## сколько раз за забег можно «продолжить за рекламу»
 func max_continues() -> int:
-	return 2 if (mode == "endless" or mode == "marathon" or mode == "duel" or mode == "race") else 1
+	return 2 if (mode == "endless" or mode == "marathon" or mode == "duel" or mode == "race" or mode == "guard") else 1
 
 
 ## выбор главы (одиночные режимы)
@@ -680,6 +690,8 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 			_restart()
 	elif s == "shop" and code == KEY_ESCAPE:
 		_close_shop()
+	elif s == "settings" and code == KEY_ESCAPE:
+		_close_settings()
 	elif s == "scores" and code == KEY_ESCAPE:
 		_go("menu")
 	if (s == "over" or s == "win" or s == "paused" or s == "result") and code == KEY_R:
@@ -693,6 +705,13 @@ func _unhandled_key_input(ev: InputEvent) -> void:
 # ================================================================= построение экранов
 
 func _build_overlay() -> void:
+	# сцена отеля переживает перестройку окна: уносим её из старого оверлея
+	# до удаления, иначе она удалится вместе с ним и картинка заметно мигает
+	if hotel_view != null and is_instance_valid(hotel_view) and hotel_view.get_parent() != null:
+		hotel_view.get_parent().remove_child(hotel_view)
+	if screen != "hotel" and hotel_view != null and is_instance_valid(hotel_view):
+		hotel_view.queue_free()
+		hotel_view = null
 	if overlay:
 		overlay.queue_free()
 		overlay = null
@@ -714,7 +733,7 @@ func _build_overlay() -> void:
 	match screen:
 		"menu", "lang":
 			dim.color = Color(0.937, 0.91, 0.847, 0.35)
-		"story", "scores", "select", "shop", "modes", "rewards":
+		"story", "scores", "select", "shop", "modes", "rewards", "settings":
 			dim.color = Color(0.118, 0.094, 0.078, 0.25)
 		"hotel":
 			dim.color = Color(0.298, 0.196, 0.118, 0.3)
@@ -748,6 +767,8 @@ func _build_overlay() -> void:
 			maxw = 900.0 if wide else 560.0
 		"hotel":
 			maxw = 980.0 if wide else 560.0
+		"settings":
+			maxw = 700.0 if wide else 520.0
 	var w := minf(maxw, vs.x - 24.0)
 
 	# карточка кладётся прямо в overlay (без контейнеров), чтобы её можно было
@@ -786,6 +807,8 @@ func _build_overlay() -> void:
 			_build_rewards(box, inner_w)
 		"hotel":
 			_build_hotel(box, inner_w)
+		"settings":
+			_build_settings(box, inner_w)
 	_fit_card(card)
 
 
@@ -855,18 +878,15 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	name_edit.text_submitted.connect(func(_t: String) -> void: name_edit.release_focus())
 	left.add_child(name_edit)
 
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 10)
-	grid.add_theme_constant_override("v_separation", 10)
-	for d in Modes.list().slice(0, 4):
-		var b := _btn("%s %s\n%s" % [d["icon"], d["title"], d["desc"]], _choose_mode.bind(d["id"]), d["id"] == "story")
-		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.custom_minimum_size = Vector2(0, 80)
-		b.add_theme_font_size_override("font_size", 21)
-		grid.add_child(b)
-	right.add_child(grid)
+	# одна главная кнопка вместо сетки из четырёх режимов: все режимы живут
+	# на своём экране, а меню осталось таким же, только свободнее
+	var story := mode_def("story")
+	var play_btn := _btn("%s %s\n%s" % [str(story["icon"]), str(story["title"]), str(story["desc"])], _choose_mode.bind("story"), true)
+	play_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	play_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	play_btn.custom_minimum_size = Vector2(0, 80)
+	play_btn.add_theme_font_size_override("font_size", 24)
+	right.add_child(play_btn)
 	# глава «Отель фей» — вход прямо с главного экрана
 	var hch := Chapters.get_ch(Chapters.hotel_index())
 	var hs := Hotel.load_state()
@@ -910,18 +930,14 @@ func _build_menu(box: VBoxContainer, w: float) -> void:
 	modes_btn.add_theme_font_size_override("font_size", 24)
 	modes_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(modes_btn)
-	var shop_btn := _btn(I18n.t("Лавка фей · ✦ %d") % pollen, _open_shop, true)
-	shop_btn.add_theme_font_size_override("font_size", 24)
-	shop_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	right.add_child(shop_btn)
-	var foot: Array = [_small_btn(I18n.t("Язык: %s") % I18n.title_of(I18n.EN if I18n.lang == I18n.RU else I18n.RU), _toggle_lang)]
-	foot.append(_small_btn(_music_label(), _toggle_music))
+	var foot: Array = [_small_btn(I18n.t("✿ Лавка · ✦ %d") % pollen, _open_shop)]
+	foot.append(_small_btn(I18n.t("⚙ Настройки"), _open_settings))
 	foot.append(_small_btn(I18n.t("Рекорды"), _open_scores.bind("story")))
 	if not OS.has_feature("web"):
 		foot.append(_small_btn(I18n.t("Выход"), func() -> void: get_tree().quit()))
 	right.add_child(_btn_row(foot, 460))
-	right.add_child(_lbl(I18n.t("Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново, M — музыка, Shift+M — звуки"), 19, Color(Sketch.INK, 0.8)))
-	right.add_child(_lbl(I18n.t("Касание: веди пальцем — полёт, «Рывок» или второй палец — рывок"), 19, Color(Sketch.INK, 0.8)))
+	# одна короткая строка вместо двух длинных: остальное — в настройках
+	right.add_child(_lbl(I18n.t("Стрелки / WASD — полёт, Пробел — рывок. Звук, язык и управление — в настройках"), 19, Color(Sketch.INK, 0.8)))
 
 
 ## рекорд режима (для карточек режимов)
@@ -946,7 +962,109 @@ func _build_lang(box: VBoxContainer, w: float) -> void:
 	box.add_child(_lbl("Язык всегда можно сменить в меню · You can change the language later in the menu", 18, Color(Sketch.INK, 0.7)))
 
 
-## экран «Все режимы»: девять игр под одной обложкой
+## экран «Настройки»: громкость музыки и звуков, язык, управление
+func _build_settings(box: VBoxContainer, w: float) -> void:
+	box.add_child(_lbl(I18n.t("Настройки"), 54, Sketch.INK, true))
+	box.add_child(_lbl(I18n.t("Музыка и звуки сведены к одному уровню: ни то, ни другое не перекрикивает друг друга."), 20, Color(Sketch.INK, 0.75)))
+	box.add_child(_gap(6))
+	box.add_child(_volume_row(I18n.t("♪ Музыка"), Music.volume, _set_music_volume, _toggle_music,
+		I18n.t("♪ Музыка: включена") if Music.enabled else I18n.t("♪ Музыка: выключена")))
+	box.add_child(_volume_row(I18n.t("✦ Звуки"), Sfx.volume, _set_sfx_volume, _toggle_mute_here,
+		I18n.t("✦ Звуки: включены") if not Sfx.muted else I18n.t("✦ Звуки: выключены")))
+	box.add_child(_btn_row([
+		_small_btn(I18n.t("Сбросить звук"), _reset_audio),
+		_small_btn(I18n.t("Язык: %s") % I18n.title_of(I18n.EN if I18n.lang == I18n.RU else I18n.RU), _toggle_lang),
+	], 420))
+	box.add_child(_gap(6))
+	box.add_child(_lbl(I18n.t("Управление"), 26, Color(Sketch.INK, 0.85), true, HORIZONTAL_ALIGNMENT_LEFT))
+	box.add_child(_lbl(I18n.t("Клавиатура: стрелки / WASD — полёт, Пробел / Shift — рывок, Esc — пауза, R — заново, M — музыка, Shift+M — звуки"), 19, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+	box.add_child(_lbl(I18n.t("Касание: веди пальцем — полёт, «Рывок» или второй палец — рывок"), 19, Color(Sketch.INK, 0.75), false, HORIZONTAL_ALIGNMENT_LEFT))
+	box.add_child(_gap(6))
+	box.add_child(_btn_row([_small_btn(I18n.t("← Назад"), _close_settings)], 200))
+
+
+## строка громкости: подпись, ползунок, проценты и кнопка вкл/выкл.
+## Ползунок не перестраивает экран (иначе ручка «прыгает» под пальцем) —
+## проценты обновляются на месте, а кнопка вкл/выкл перерисовывает окно.
+func _volume_row(title: String, value: float, slide: Callable, toggle: Callable, toggle_text: String) -> Control:
+	var pc := PanelContainer.new()
+	var st := StyleBoxFlat.new()
+	st.bg_color = Color(1, 1, 1, 0.45)
+	st.set_border_width_all(2)
+	st.border_color = Color(Sketch.INK, 0.4)
+	st.set_corner_radius_all(8)
+	st.set_content_margin_all(8)
+	pc.add_theme_stylebox_override("panel", st)
+	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	pc.add_child(v)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	v.add_child(head)
+	head.add_child(_lbl(title, 24, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT, false))
+	var pct := _lbl("%d%%" % roundi(clampf(value, 0.0, 1.0) * 100.0), 22, POLLEN_COL, true, HORIZONTAL_ALIGNMENT_RIGHT, false)
+	head.add_child(pct)
+	head.add_child(_small_btn(toggle_text, toggle))
+	var sl := HSlider.new()
+	sl.min_value = 0.0
+	sl.max_value = 100.0
+	sl.step = 1.0
+	sl.value = roundf(clampf(value, 0.0, 1.0) * 100.0)
+	sl.custom_minimum_size = Vector2(0, 34)
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sl.focus_mode = Control.FOCUS_NONE
+	v.add_child(sl)
+	sl.value_changed.connect(func(p: float) -> void:
+		slide.call(clampf(p / 100.0, 0.0, 1.0))
+		pct.text = "%d%%" % roundi(p))
+	return pc
+
+
+## выключить/включить звуки и обновить подписи на экране настроек
+func _toggle_mute_here() -> void:
+	_toggle_mute()
+	_build_overlay()
+
+
+func _set_music_volume(v: float) -> void:
+	Music.set_volume(v)
+	if Music.enabled and Music.track == "":
+		_sync_music()
+
+
+func _set_sfx_volume(v: float) -> void:
+	Sfx.set_volume(v)
+	# короткий щелчок на каждом движении ползунка: громкость слышно сразу
+	Sfx.play("click")
+
+
+## вернуть громкость к той, что была задумана (музыка и звуки поровну)
+func _reset_audio() -> void:
+	# порядок важен: громкость выставляем до включения, тогда музыка
+	# возвращается плавным фейдом и сразу на нужный уровень
+	Music.set_volume(Music.DEFAULT_VOLUME)
+	Music.set_enabled(true)
+	Sfx.set_volume(Sfx.DEFAULT_VOLUME)
+	Sfx.set_muted(false)
+	Sfx.play("click")
+	_build_overlay()
+
+
+func _open_settings() -> void:
+	if ad_busy:
+		return
+	Sfx.play("click")
+	settings_back = screen
+	_go("settings")
+
+
+func _close_settings() -> void:
+	Sfx.play("click")
+	_go(settings_back if settings_back != "settings" else "menu")
+
+
+## экран «Все режимы»: все игры под одной обложкой
 func _build_modes(box: VBoxContainer, w: float) -> void:
 	box.add_child(_lbl(I18n.t("Режимы игры"), 54, Sketch.INK, true))
 	box.add_child(_lbl(I18n.t("У каждого режима своя таблица рекордов. Новые открываются вместе с главами."), 20, Color(Sketch.INK, 0.75)))
@@ -1245,6 +1363,11 @@ func _build_story(box: VBoxContainer, w: float) -> void:
 	if mode == "marathon":
 		qb.add_child(_lbl(I18n.t("◷ Марафон: волны врагов без конца, каждые 3 волны — сердце. От выбранной главы зависит, кто именно полетит навстречу."), tsz, Sketch.INK, true, HORIZONTAL_ALIGNMENT_LEFT))
 		qb.add_child(_lbl(I18n.t("Волну можно продлить за рекламу — сердце в паузе или продолжение после гибели."), 19, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "choir":
+		qb.add_child(_lbl(I18n.t("♬ Хор фей: две подружки летят с тобой — собирают добычу и закрывают от удара (сами закружатся, но выручат). Соперницы воруют всё, до чего долетят раньше: спугни их рывком, и они бросят находку. Держись рядом с подружками — запоёт хор, очки ×2."), tsz, Color("#5cc7c0"), true, HORIZONTAL_ALIGNMENT_LEFT))
+	if mode == "guard":
+		qb.add_child(_lbl(I18n.t("✤ Звёздная стража: тени идут тропой к сердцу поляны. Ставь башни-цветы на свободные круги, собирай росу с побеждённых теней и улучшай башни. Десять волн — и поляна спасена."), tsz, Color("#8a5aa8"), true, HORIZONTAL_ALIGNMENT_LEFT))
+		qb.add_child(_lbl(I18n.t("Василёк бьёт быстро, Шиповник — по площади, Светлячок замедляет тени. Рывок феи тоже бьёт: влетай в тень, чтобы отбросить её назад по тропе."), 19, Color(Sketch.INK, 0.8), false, HORIZONTAL_ALIGNMENT_LEFT))
 	if mode == "duel":
 		qb.add_child(_lbl(I18n.t("❂ Дуэль: Король Теней возвращается волна за волной. Собери 3 звёздных осколка и бей его рывком — каждый следующий босс крепче."), tsz, Color("#b58cff"), true, HORIZONTAL_ALIGNMENT_LEFT))
 	if mode == "zen":
@@ -1265,6 +1388,10 @@ func _build_story(box: VBoxContainer, w: float) -> void:
 		go_text = I18n.t("Полетели! ➜")
 	elif mode == "daily":
 		go_text = I18n.t("Принять вызов ➜")
+	elif mode == "choir":
+		go_text = I18n.t("Запевать! ➜")
+	elif mode == "guard":
+		go_text = I18n.t("В стражу! ➜")
 	elif mode == "race":
 		go_text = I18n.t("На старт! ➜")
 	var no_attempts := mode == "daily" and Shop.daily_attempts_left() <= 0
@@ -1330,6 +1457,12 @@ func _build_paused(box: VBoxContainer) -> void:
 	if is_single():
 		box.add_child(_btn(I18n.t("К главам"), _to_select))
 	box.add_child(_btn(I18n.t("В меню"), _to_menu))
+	box.add_child(_gap(4))
+	# звук и управление — в настройках, их можно поправить не выходя из забега
+	box.add_child(_btn_row([
+		_small_btn(_music_label(), _toggle_music),
+		_small_btn(I18n.t("⚙ Настройки"), _open_settings),
+	], 340))
 
 
 func _build_over(box: VBoxContainer, w: float) -> void:
@@ -1342,6 +1475,10 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 		title = I18n.t("И жили они долго и счастливо!")
 		text = I18n.t("Все девять фей спасены — и всего с одним пером! Легенда.") if mode == "hard" else I18n.t("Все девять фей спасены, а последний осколок тени погас.")
 		col = GOLD
+	elif screen == "result" and mode == "guard":
+		title = I18n.t("Поляна отстояна!")
+		text = I18n.t("Все %d волн отбиты, сердце поляны цело: %d из %d. Тени ушли до следующей ночи.") % [Guard.WAVES, int(game.guard_hp), Guard.HEART_HP]
+		col = Color("#8a5aa8")
 	elif screen == "result":
 		title = I18n.t("Глава пройдена!")
 		text = "%s · %s. %s" % [ch["num"], ch["title"], ch["outro"]]
@@ -1362,6 +1499,14 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 	elif mode == "daily":
 		title = I18n.t("Вызов дня не покорился…")
 		text = I18n.t("Сегодня всем досталась глава «%s». Попробуешь ещё раз — соперники уже ждут.") % str(ch["title"])
+	elif mode == "guard":
+		title = I18n.t("Стража пала…")
+		text = I18n.t("Волн отбито: %d, теней развеяно: %d, башен построено: %d. Сердце поляны ещё можно отстоять.") % [maxi(0, int(game.wave) - 1), int(game.guard_kills), int(game.guard_built)]
+		col = Color("#8a5aa8")
+	elif mode == "choir":
+		title = I18n.t("Хор рассыпался…")
+		text = I18n.t("Подружки выручили %d раз, соперницы унесли %d находок. Соберитесь снова — и запоёте громче.") % [int(game.choir_saved), int(game.rival_score)]
+		col = Color("#5cc7c0")
 	elif mode == "chapter" or mode == "zen":
 		title = I18n.t("Глава не удалась…")
 		text = I18n.t("%s · %s. Попробуй ещё раз!") % [ch["num"], ch["title"]]
@@ -1391,7 +1536,7 @@ func _build_over(box: VBoxContainer, w: float) -> void:
 		elif mode == "daily" and Shop.daily_attempts_left() <= 0 and not Shop.daily_used_ad_attempt():
 			b.add_child(_btn(I18n.t("▶ Ещё попытка за рекламу"), _daily_extra_attempt.bind(false), true))
 		else:
-			b.add_child(_btn(I18n.t("▶ %s за рекламу") % (I18n.t("Продолжить охоту") if (mode == "endless" or mode == "marathon" or mode == "duel") else I18n.t("Продолжить главу")), _continue_for_ad, true))
+			b.add_child(_btn(I18n.t("▶ %s за рекламу") % (I18n.t("Продолжить охоту") if (mode == "endless" or mode == "marathon" or mode == "duel") else (I18n.t("Продолжить оборону") if mode == "guard" else I18n.t("Продолжить главу"))), _continue_for_ad, true))
 	if screen == "over" and not blessing and Shop.cooldown_left("bless", AD_BLESS_CD) <= 0.0:
 		b.add_child(_small_btn(I18n.t("❀ Благословение фей на новый забег за рекламу"), _bless_for_ad))
 	if screen == "result" and story_idx < Chapters.story_count() - 1:
@@ -1445,7 +1590,7 @@ func _build_scores(box: VBoxContainer) -> void:
 
 ## в одноглавевых режимах в таблице показываем номер главы, а не «3/9»
 func is_single_tab(tab: String) -> bool:
-	return Modes.pick(tab) or tab == "daily" or tab == "duel"
+	return Modes.pick(tab) or tab == "daily" or tab == "duel" or tab == "guard"
 
 
 func _score_table(highlight: int, max_rows: int = 10) -> Control:
@@ -1466,7 +1611,7 @@ func _score_table(highlight: int, max_rows: int = 10) -> Control:
 		var s: Dictionary = scores[i]
 		var chn := int(s.get("chapter", 0))
 		var colv: String = str(ROMAN[clampi(chn, 0, ROMAN.size() - 1)]) if single else "%d/%d" % [chn, Chapters.story_count()]
-		if tab == "marathon" or tab == "duel":
+		if tab == "marathon" or tab == "duel" or tab == "guard":
 			colv = I18n.t("в. %d") % int(s.get("wave", 0))
 		elif tab == "idle":
 			colv = I18n.t("г. %d") % int(s.get("wave", 0))
@@ -2027,7 +2172,46 @@ func _make_theme() -> Theme:
 	th.set_stylebox("grabber_highlight", "VScrollBar", sb)
 	th.set_stylebox("grabber_pressed", "VScrollBar", sb)
 	th.set_stylebox("scroll", "VScrollBar", StyleBoxEmpty.new())
+
+	# ползунки громкости
+	th.set_stylebox("slider", "HSlider", _bar_box(Color(Sketch.INK, 0.16)))
+	th.set_stylebox("grabber_area", "HSlider", _bar_box(Color(0.91, 0.416, 0.573, 0.7)))
+	th.set_stylebox("grabber_area_highlight", "HSlider", _bar_box(Color(0.91, 0.416, 0.573, 0.9)))
+	th.set_icon("grabber", "HSlider", _knob(Color("#fffaf0")))
+	th.set_icon("grabber_highlight", "HSlider", _knob(Color("#fff3f6")))
+	th.set_icon("grabber_disabled", "HSlider", _knob(Color(Sketch.INK, 0.25)))
+	th.set_stylebox("focus", "HSlider", StyleBoxEmpty.new())
 	return th
+
+
+## дорожка ползунка: тонкая карандашная линия со скруглением
+func _bar_box(col: Color) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = col
+	s.set_corner_radius_all(5)
+	s.content_margin_top = 5
+	s.content_margin_bottom = 5
+	s.content_margin_left = 4
+	s.content_margin_right = 4
+	return s
+
+
+## круглая ручка ползунка — рисуем сами, картинок в проекте нет
+func _knob(fill: Color) -> ImageTexture:
+	var px := 24
+	var img := Image.create_empty(px, px, false, Image.FORMAT_RGBA8)
+	var c := (px - 1) * 0.5
+	var r := c - 1.5
+	for y in px:
+		for x in px:
+			var d := Vector2(float(x) - c, float(y) - c).length()
+			if d <= r - 2.0:
+				img.set_pixel(x, y, fill)
+			elif d <= r:
+				img.set_pixel(x, y, Color(Sketch.INK.r, Sketch.INK.g, Sketch.INK.b, 0.85))
+			else:
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+	return ImageTexture.create_from_image(img)
 
 
 # ================================================================= отель фей (idle)
@@ -2087,15 +2271,18 @@ func _hotel_tick(dt: float) -> void:
 		u.call()
 
 
-## подпись состояния: изменилась — значит экран надо перестроить
+## подпись состояния: изменилась — значит экран надо перестроить.
+## Счётчики (served, earned, cash) сюда не входят: они меняются почти каждый
+## кадр и обновляются «живыми» подписями, а перестройка окна заставляет
+## сцену отеля мерцать. Здесь только то, что меняет состав экрана.
 func _hotel_signature() -> String:
 	var beds := Hotel.beds(hotel_state)
 	var parts := []
 	var rooms: Array = hotel_state["rooms"]
 	for r in rooms:
 		parts.append(str((r["guests"] as Array).size()))
-	return "%d|%d|%d|%d|%d|%s" % [int((hotel_state["queue"] as Array).size()), int(beds[0]), int(beds[1]),
-		int(hotel_state["served"]), int(hotel_state["earned"]), ",".join(parts)]
+	return "%d|%d|%d|%s" % [int((hotel_state["queue"] as Array).size()), int(beds[0]), int(beds[1]),
+		",".join(parts)]
 
 
 ## подпись, которую обновляем каждый кадр без перестройки всего окна
@@ -2432,14 +2619,14 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 		st = hotel_state
 	var beds := Hotel.beds(st)
 	box.add_child(_lbl("♨ " + I18n.t("Отель фей"), 44 if small else 50, Color("#c98a4b"), true))
-	# рейтинг, касса и сбор — одной строкой, чтобы сцена занимала больше места
-	var stars := Hotel.stars(st)
+	# рейтинг, касса и сбор — одной строкой, чтобы сцена занимала больше места.
+	# Подпись «живая»: счётчики меняются сами по себе и не требуют перестройки окна.
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 10)
 	head.alignment = BoxContainer.ALIGNMENT_CENTER
-	var stat := _lbl("", 21, Color("#b08810"), true, HORIZONTAL_ALIGNMENT_LEFT, false)
+	var stat := _hotel_live_label(_lbl("", 21, Color("#b08810"), true, HORIZONTAL_ALIGNMENT_LEFT, false), func() -> String:
+		return I18n.t("★ %.1f · гостей %d · касса %d ✦") % [Hotel.stars(hotel_state), int(hotel_state["served"]), int(hotel_state["cash"])])
 	stat.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	stat.text = I18n.t("★ %.1f · гостей %d · касса %d ✦") % [stars, int(st["served"]), int(st["cash"])]
 	head.add_child(stat)
 	head.add_child(_small_btn(I18n.t("Собрать"), _hotel_collect.bind(false)))
 	head.add_child(_small_btn(I18n.t("▶ ×2"), _hotel_collect.bind(true)))
@@ -2455,13 +2642,17 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 		box.add_child(_lbl("✦ " + hotel_flash, 20, PINK, true))
 	elif hotel_welcome != "":
 		box.add_child(_lbl(hotel_welcome, 20, POLLEN_COL, true))
-	# сцена отеля: феи, номера и станции — выбираем курсором
-	var view := HotelView.new()
+	# сцена отеля: феи, номера и станции — выбираем курсором.
+	# Узел не пересоздаётся: портреты фей и их tween-ы остаются живыми,
+	# поэтому перестройка списка рядом не заставляет сцену «моргать».
+	if hotel_view == null or not is_instance_valid(hotel_view):
+		hotel_view = HotelView.new()
+		hotel_view.act.connect(_hotel_view_act)
+	var view := hotel_view
 	view.custom_minimum_size = Vector2(0, clampf(w * 0.34, 250.0, 330.0))
 	view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	view.state = hotel_state
 	view.sel = hotel_sel
-	view.act.connect(_hotel_view_act)
 	box.add_child(view)
 	box.add_child(_lbl(_hotel_tip(), 19, Color(Sketch.INK, 0.85), hotel_sel != ""))
 	# вкладки
@@ -2496,6 +2687,9 @@ func _build_hotel(box: VBoxContainer, w: float) -> void:
 		_small_btn(I18n.t("✿ Лавка"), _open_shop),
 		_small_btn(I18n.t("← В меню"), _leave_hotel),
 	], 560))
+	# окно построено — подпись должна ему соответствовать, иначе следующий
+	# такт перестроит отель ещё раз
+	hotel_sig = _hotel_signature()
 
 
 ## какие гости могут прилететь при текущем рейтинге
@@ -2679,7 +2873,8 @@ func _hotel_ups(box: VBoxContainer, _w: float) -> void:
 			text += I18n.t(" · %d ✦") % price
 		grid.add_child(_hotel_card_btn(text, I18n.t(str(d["desc"])), _hotel_buy_up.bind(id), false, price < 0))
 	box.add_child(grid)
-	box.add_child(_lbl(I18n.t("Итоги смены уходят в таблицу рекордов режима «Отель фей»: %d ✦ и %d гостей.") % [int(hotel_state["earned"]), int(hotel_state["served"])], 19, Color(Sketch.INK, 0.75)))
+	box.add_child(_hotel_live_label(_lbl("", 19, Color(Sketch.INK, 0.75)), func() -> String:
+		return I18n.t("Итоги смены уходят в таблицу рекордов режима «Отель фей»: %d ✦ и %d гостей.") % [int(hotel_state["earned"]), int(hotel_state["served"])]))
 	box.add_child(_btn_row([
 		_btn(I18n.t("◷ Записать итоги смены"), _hotel_report, true),
 		_small_btn(I18n.t("★ Рекорды отеля"), _open_scores.bind("idle")),

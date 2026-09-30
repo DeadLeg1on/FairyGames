@@ -89,6 +89,11 @@ func _run_flow() -> void:
 		["play", func(): m._begin_chapter()],
 		["over", func(): m._on_game_over(500, 4)],
 		["menu", func(): m._to_menu()],
+		# --- звёздная стража (tower defense) --------------------------------
+		["story", func(): m._choose_mode("guard")],
+		["play", func(): m._begin_chapter()],
+		["over", func(): m._on_game_over(1200, Modes.GUARD_CHAPTER)],
+		["menu", func(): m._to_menu()],
 		# --- ежедневный вызов ----------------------------------------------
 		# вызов дня одноразовый: сбрасываем состояние, иначе повторные проходы
 		# (на других размерах окна) остаются на экране главы
