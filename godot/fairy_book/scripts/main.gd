@@ -348,7 +348,7 @@ func _record(score: int, chapter: int) -> void:
 
 func _on_chapter_cleared(idx: int, bonus: int, score: int) -> void:
 	_unlock(idx + 2)
-	_draw_card()
+	_draw_fairy_card()
 	if _single_run():
 		# одиночные режимы заканчиваются на первой пройденной главе
 		_record(score, idx)
@@ -626,7 +626,7 @@ func _open_rewards() -> void:
 # ---------------------------------------------------------------- колода сказок
 
 ## за пройденную главу вытягиваем одну карту: зерно — от времени, пыльцы и колоды
-func _draw_card() -> void:
+func _draw_fairy_card() -> void:
 	var seed_int := int(Time.get_unix_time_from_system() * 1000.0) % 1000003 + pollen + Cards.count(deck) * 31
 	last_card = Cards.take(seed_int)
 	if last_card == "":
