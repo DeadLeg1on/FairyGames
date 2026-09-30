@@ -119,7 +119,7 @@ jobs:
           echo $? > hotel.status
           tail -30 hotel.log
 
-      - name: Тесты (реклама по площадкам: веб, Android, локальная сборка)
+      - name: "Тесты (реклама по площадкам: веб, Android, локальная сборка)"
         if: steps.import.outputs.compile == '1'
         run: |
           set +e
