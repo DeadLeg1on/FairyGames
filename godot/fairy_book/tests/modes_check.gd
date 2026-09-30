@@ -178,7 +178,7 @@ func _check_choir(g) -> void:
 	_choir_quiet(g, null, rival)
 	g.px = 40
 	g.py = g.gy() - 40
-	var stolen := g.rival_score
+	var stolen: int = g.rival_score
 	_step(g, 40)
 	ok(loot.dead, "хор: соперница забрала пыльцу")
 	ok(g.rival_score > stolen, "хор: счёт соперниц вырос (%d → %d)" % [stolen, g.rival_score])
@@ -190,8 +190,8 @@ func _check_choir(g) -> void:
 	g.px = rival.x
 	g.py = rival.y
 	g.dash_t = 0.2
-	var scared := g.choir_scared
-	var had := g.rival_score
+	var scared: int = g.choir_scared
+	var had: int = g.rival_score
 	_step(g, 2)
 	ok(g.choir_scared > scared, "хор: рывок спугнул соперницу (%d)" % g.choir_scared)
 	ok(g.rival_score < had, "хор: украденное вернули (%d → %d)" % [had, g.rival_score])
@@ -206,7 +206,7 @@ func _check_choir(g) -> void:
 	g.py = guard.y
 	g.inv = 0.0
 	g.dash_t = 0.0
-	var hearts := g.hearts
+	var hearts: int = g.hearts
 	ok(g.damage(), "хор: удар принят")
 	ok(g.hearts == hearts, "хор: сердце цело — прикрыла подружка (♥ %d)" % g.hearts)
 	ok(guard.a > 0.0, "хор: подружка закружилась (%.1f с)" % guard.a)

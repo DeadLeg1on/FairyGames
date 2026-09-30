@@ -65,7 +65,7 @@ func _check_catalog() -> void:
 	var hi := Chapters.hotel_index()
 	ok(str(Chapters.get_ch(hi)["id"]) == "hotel", "отель — отдельная запись каталога")
 	ok(Modes.hotel("idle") and not Modes.hotel("story"), "режим idle помечен как отель")
-	ok(Modes.count() == 10, "режимов стало десять")
+	ok(Modes.count() == 12, "режимов стало двенадцать")
 	ok(Modes.daily_chapter(9) <= Chapters.story_count(), "ежедневная глава не попадает в отель")
 	# целостность вкусов: у каждого гостя есть его вид окружения и его процедура
 	var broken := 0
