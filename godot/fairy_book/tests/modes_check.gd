@@ -20,6 +20,7 @@ func _ready() -> void:
 	_check_zen(g)
 	_check_choir(g)
 	_check_guard(g)
+	_check_guard_balance(g)
 	_check_daily()
 	_check_shop()
 	_check_i18n()
@@ -374,6 +375,52 @@ func _check_guard(g) -> void:
 	ok(g.state == g.St.CLEAR, "стража: десять волн отбиты — поляна спасена")
 	ok(g.progress == Guard.WAVES, "стража: прогресс равен числу волн (%d)" % g.progress)
 	ok(g.last_bonus >= Guard.HEART_HP * 60, "стража: бонус за целое сердце (%d)" % g.last_bonus)
+
+
+## жадная стройка бота: сначала заполнить круги башнями, потом улучшения.
+## Одна постройка за кадр — как у живого игрока.
+func _guard_bot_build(g) -> void:
+	var order := [0, 0, 2, 1, 0, 2, 0, 2, 1, 2, 0, 2]
+	var towers: int = g.count("tower")
+	for si in g.guard_spots.size():
+		var p: Vector2 = g.guard_spots[si]
+		if g._guard_tower_at(p) != null:
+			continue
+		g.guard_tool = order[mini(towers, order.size() - 1)]
+		var dew0: int = g.guard_dew
+		g._guard_build(si)
+		if g.guard_dew < dew0:
+			return
+	for si in g.guard_spots.size():
+		var p: Vector2 = g.guard_spots[si]
+		if g._guard_tower_at(p) == null:
+			continue
+		var dew1: int = g.guard_dew
+		g._guard_build(si)
+		if g.guard_dew < dew1:
+			return
+
+
+## Бот отыгрывает всю оборону: от первой волны до десятой. Росу собираем без
+## потерь — проверяем баланс башен и волн, а не скорость феи. Проигрыш здесь
+## означал бы, что режим непроходим для живого игрока.
+func _check_guard_balance(g) -> void:
+	g.new_run("guard")
+	g.start_chapter(Modes.GUARD_CHAPTER)
+	var frames := 0
+	var t0 := Time.get_ticks_msec()
+	while g.state == g.St.PLAY and frames < 60 * 360:
+		for e in g.ents:
+			if e.kind == "dew" and not e.dead:
+				g.guard_dew += int(e.hp)
+				e.dead = true
+		_guard_bot_build(g)
+		g._process(1.0 / 60.0)
+		frames += 1
+	var ms := Time.get_ticks_msec() - t0
+	ok(g.state == g.St.CLEAR, "стража: бот отстоял все %d волн (игровых %.0f с, расчёт %d мс)" % [Guard.WAVES, frames / 60.0, ms])
+	ok(g.guard_hp > 0, "стража: сердце поляны уцелело (%d из %d, прорывов %d)" % [g.guard_hp, Guard.HEART_HP, g.guard_leaks])
+	ok(g.guard_built >= 6, "стража: росы хватает на оборону (%d башен, теней развеяно %d)" % [g.guard_built, g.guard_kills])
 
 
 func _check_daily() -> void:
