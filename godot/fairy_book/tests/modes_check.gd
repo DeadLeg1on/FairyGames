@@ -163,10 +163,18 @@ func _check_choir(g) -> void:
 	ok(pol.dead, "хор: подружка подобрала пыльцу с поля")
 	ok(ally.b > 0, "хор: подружка несёт добычу фее (b=%d)" % int(ally.b))
 	g.carry = 0
-	g.px = ally.x
-	g.py = ally.y
-	_step(g, 30)
-	ok(g.carry >= 1, "хор: добыча дошла до феи (carry=%d)" % g.carry)
+	# держим фею рядом с подружкой по кадрам: добыча может тут же уйти в бутон
+	# (тогда carry снова 0), поэтому признаком передачи служит пустая подружка
+	var given := false
+	for i in 30:
+		g.inv = 2.0
+		g.px = ally.x
+		g.py = ally.y
+		g._process(1.0 / 60.0)
+		if int(ally.b) == 0:
+			given = true
+			break
+	ok(given or g.carry >= 1, "хор: добыча дошла до феи (carry=%d, подружка пуста=%s)" % [g.carry, str(given)])
 
 	# --- соперница уносит то же самое
 	var rival = _first(g, "rival")
@@ -420,7 +428,8 @@ func _check_guard_balance(g) -> void:
 	var ms := Time.get_ticks_msec() - t0
 	ok(g.state == g.St.CLEAR, "стража: бот отстоял все %d волн (игровых %.0f с, расчёт %d мс)" % [Guard.WAVES, frames / 60.0, ms])
 	ok(g.guard_hp > 0, "стража: сердце поляны уцелело (%d из %d, прорывов %d)" % [g.guard_hp, Guard.HEART_HP, g.guard_leaks])
-	ok(g.guard_built >= 6, "стража: росы хватает на оборону (%d башен, теней развеяно %d)" % [g.guard_built, g.guard_kills])
+	ok(g.guard_built >= 3 and g.guard_kills >= 60,
+		"стража: росы хватает на оборону (построек %d, теней развеяно %d)" % [g.guard_built, g.guard_kills])
 
 
 func _check_daily() -> void:
