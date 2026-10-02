@@ -1990,17 +1990,44 @@ func _init_guard() -> void:
 
 ## тропа и места под башни в пикселях; пересчитывается при смене размера окна
 func _guard_layout() -> void:
+	var old_len := guard_len
 	guard_path = Guard.path(W, 104.0, gy() - 30.0)
 	guard_len = Guard.path_len(guard_path)
 	guard_spots = _guard_make_spots()
+	# тропа пересчитана под новый размер окна: тени переносим пропорционально,
+	# иначе уменьшение окна мгновенно «доводит» их до сердца поляны
+	if old_len > 1.0 and guard_len > 1.0 and not is_equal_approx(old_len, guard_len):
+		var k := guard_len / old_len
+		for e in ents:
+			if _guard_is_foe(e.kind):
+				e.d = clampf(e.d * k, 0.0, guard_len - 1.0)
+	# башни переставляем на ближайшие свободные круги: круги тоже зависят от
+	# размера, а башня обязана стоять на своём круге, иначе её не улучшить
+	var used := {}
 	for e in ents:
-		if e.kind == "tower":
+		if e.kind != "tower":
+			continue
+		var bi := -1
+		var bd := INF
+		for i in guard_spots.size():
+			if used.has(i):
+				continue
+			var dd: float = guard_spots[i].distance_to(Vector2(e.x, e.y))
+			if dd < bd:
+				bd = dd
+				bi = i
+		if bi >= 0:
+			used[bi] = true
+			e.x = guard_spots[bi].x
+			e.y = guard_spots[bi].y
+		else:
 			e.x = clampf(e.x, 30.0, W - 30.0)
 			e.y = clampf(e.y, 110.0, gy() - 30.0)
-		elif _guard_is_foe(e.kind):
-			var q := Guard.at(guard_path, e.d)
-			e.x = q.x
-			e.y = q.y
+	# добыча и снаряды просто не должны оставаться за пределами поля
+	for e in ents:
+		if e.kind == "dew" or e.kind == "shot":
+			e.x = clampf(e.x, 10.0, W - 10.0)
+			e.y = clampf(e.y, 100.0, gy() - 10.0)
 
 
 ## места под башни: вдоль тропы, но не на ней и не под панелью стройки

@@ -369,6 +369,45 @@ func _check_guard(g) -> void:
 	g.revive()
 	ok(g.state == g.St.PLAY and g.guard_hp == Guard.HEART_HP, "стража: второй шанс чинит сердце (%d)" % g.guard_hp)
 
+	# --- окно изменилось прямо во время обороны
+	g.new_run("guard")
+	g.start_chapter(Modes.GUARD_CHAPTER)
+	g.guard_dew = 500
+	g.guard_tool = 0
+	g._guard_build(0)
+	g.guard_tool = 2
+	g._guard_build(1)
+	var towers: int = g.count("tower")
+	ok(towers == 2, "стража: две башни встали на круги (%d)" % towers)
+	g._guard_spawn_foe("foe")
+	foe = _first_guard_foe(g)
+	ok(foe != null, "стража: есть тень для проверки смены окна")
+	if foe != null:
+		foe.d = g.guard_len * 0.5
+		var w0: float = g.W
+		var h0: float = g.H
+		var len0: float = g.guard_len
+		g.W = w0 * 0.7
+		g.H = h0 * 0.85
+		g._guard_layout()
+		ok(g.count("tower") == towers, "стража: башни пережили смену окна (%d)" % g.count("tower"))
+		var on_spot := 0
+		for e in g.ents:
+			if e.kind != "tower":
+				continue
+			for p in g.guard_spots:
+				if p.distance_to(Vector2(e.x, e.y)) < 1.5:
+					on_spot += 1
+					break
+		ok(on_spot == towers, "стража: после смены окна башни стоят на своих кругах (%d из %d)" % [on_spot, towers])
+		var share: float = float(foe.d) / maxf(1.0, g.guard_len)
+		ok(absf(share - 0.5) < 0.02, "стража: тень осталась на середине тропы (%.2f)" % share)
+		ok(foe.d < g.guard_len, "стража: короткая тропа не довела тень до сердца")
+		g.W = w0
+		g.H = h0
+		g._guard_layout()
+		ok(absf(g.guard_len - len0) < 0.5, "стража: тропа вернулась к прежнему размеру (%.0f)" % g.guard_len)
+
 	# --- десять волн отбиты — победа
 	g.new_run("guard")
 	g.start_chapter(Modes.GUARD_CHAPTER)
